@@ -8,6 +8,7 @@ import express, {
 } from 'express'
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto'
 import { existsSync } from 'node:fs'
+import { pathToFileURL } from 'node:url'
 import path from 'node:path'
 import {
   AppendInput,
@@ -1725,45 +1726,56 @@ function assertStartupConfig() {
   }
 }
 
-assertStartupConfig()
+export function startServer() {
+  assertStartupConfig()
 
-const server = app.listen(PORT, () => {
-  console.log(`RePlaya API listening on http://localhost:${PORT}`)
-})
-
-const openSockets = new Set<import('node:net').Socket>()
-server.on('connection', (socket) => {
-  openSockets.add(socket)
-  socket.on('close', () => openSockets.delete(socket))
-})
-
-let shuttingDown = false
-function shutdown(signal: string) {
-  if (shuttingDown) return
-  shuttingDown = true
-  console.log(`[replaya] ${signal} received — shutting down (grace ${SHUTDOWN_GRACE_MS}ms).`)
-
-  server.close((error) => {
-    if (error) {
-      console.error('[replaya] error while closing server', error)
-      process.exit(1)
-    }
-    console.log('[replaya] closed cleanly.')
-    process.exit(0)
+  const server = app.listen(PORT, () => {
+    console.log(`RePlaya API listening on http://localhost:${PORT}`)
   })
 
-  // Let in-flight requests drain briefly, then drop lingering sockets
-  // (live-tail SSE streams never end on their own) so server.close() can finish.
-  setTimeout(() => {
-    for (const socket of openSockets) socket.destroy()
-  }, Math.min(3_000, SHUTDOWN_GRACE_MS)).unref()
+  const openSockets = new Set<import('node:net').Socket>()
+  server.on('connection', (socket) => {
+    openSockets.add(socket)
+    socket.on('close', () => openSockets.delete(socket))
+  })
 
-  // Hard cap so a stuck close can't wedge the process.
-  setTimeout(() => {
-    console.error('[replaya] forced exit after shutdown grace period.')
-    process.exit(1)
-  }, SHUTDOWN_GRACE_MS).unref()
+  let shuttingDown = false
+  const shutdown = (signal: string) => {
+    if (shuttingDown) return
+    shuttingDown = true
+    console.log(`[replaya] ${signal} received — shutting down (grace ${SHUTDOWN_GRACE_MS}ms).`)
+
+    server.close((error) => {
+      if (error) {
+        console.error('[replaya] error while closing server', error)
+        process.exit(1)
+      }
+      console.log('[replaya] closed cleanly.')
+      process.exit(0)
+    })
+
+    // Let in-flight requests drain briefly, then drop lingering sockets
+    // (live-tail SSE streams never end on their own) so server.close() can finish.
+    setTimeout(() => {
+      for (const socket of openSockets) socket.destroy()
+    }, Math.min(3_000, SHUTDOWN_GRACE_MS)).unref()
+
+    // Hard cap so a stuck close can't wedge the process.
+    setTimeout(() => {
+      console.error('[replaya] forced exit after shutdown grace period.')
+      process.exit(1)
+    }, SHUTDOWN_GRACE_MS).unref()
+  }
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'))
+  process.on('SIGINT', () => shutdown('SIGINT'))
+
+  return server
 }
 
-process.on('SIGTERM', () => shutdown('SIGTERM'))
-process.on('SIGINT', () => shutdown('SIGINT'))
+export { app }
+
+// Start only when executed directly (not when imported by tests).
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  startServer()
+}
