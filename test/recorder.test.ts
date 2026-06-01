@@ -24,6 +24,22 @@ describe('recorderScript', () => {
   it('derives apiHost from the script origin by default', () => {
     expect(script).toContain('apiHost: scriptOrigin')
   })
+
+  it('guards sendBeacon against oversized (>~64KB) payloads', () => {
+    expect(script).toContain('beaconMaxBytes')
+    expect(script).toContain('blob.size <= config.beaconMaxBytes')
+  })
+
+  it('retries failed flushes with bounded backoff and a capped buffer', () => {
+    expect(script).toContain('flushBackoffMs')
+    expect(script).toContain('flushBackoffMaxMs')
+    expect(script).toContain('maxBufferEvents')
+    expect(script).toContain('function scheduleRetry')
+  })
+
+  it('never lets a failed start reject into the host page', () => {
+    expect(script).toContain('recorder failed to start')
+  })
 })
 
 describe('recorderTestPage', () => {

@@ -19,6 +19,7 @@ import {
   RefreshCw,
   Search,
   Terminal,
+  Trash2,
   X,
   Zap,
 } from 'lucide-react'
@@ -302,6 +303,8 @@ function App() {
   const [copied, setCopied] = useState(false)
   const [liveStatus, setLiveStatus] = useState<LiveStatus>('idle')
   const [showInstall, setShowInstall] = useState(false)
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
+  const [deletingSession, setDeletingSession] = useState(false)
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>('activity')
   const [seekedEntryId, setSeekedEntryId] = useState<string | null>(null)
   const [latestSessionPage, setLatestSessionPage] = useState(true)
@@ -674,6 +677,29 @@ ${initOptions.join(',\n')}
     await navigator.clipboard.writeText(selected.id)
   }, [selected])
 
+  const deleteSelected = useCallback(async () => {
+    if (!selected) return
+    const id = selected.id
+    setDeletingSession(true)
+    try {
+      await api.deleteSession(id)
+      const remaining = sessions.filter((session) => session.id !== id)
+      setSessions(remaining)
+      setConfirmingDelete(false)
+      setSelected(null)
+      setLiveStatus('idle')
+      setSeekedEntryId(null)
+      setError(null)
+      if (remaining[0]) {
+        await loadSession(remaining[0].id)
+      }
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : 'Unable to delete session.')
+    } finally {
+      setDeletingSession(false)
+    }
+  }, [selected, sessions, loadSession])
+
   const activity = useMemo(() => (selected ? buildActivity(selected.events) : []), [selected])
 
   const seekToEntry = useCallback((entry: ActivityEntry) => {
@@ -831,6 +857,14 @@ ${initOptions.join(',\n')}
                     <button type="button" className="icon-button" onClick={exportSelected} title="Export JSON">
                       <Download size={17} aria-hidden="true" />
                     </button>
+                    <button
+                      type="button"
+                      className="icon-button danger"
+                      onClick={() => setConfirmingDelete(true)}
+                      title="Delete session"
+                    >
+                      <Trash2 size={17} aria-hidden="true" />
+                    </button>
                   </div>
                 </div>
                 <ReplayPlayer
@@ -897,6 +931,56 @@ ${initOptions.join(',\n')}
           onCopy={() => void copySnippet()}
           onClose={() => setShowInstall(false)}
         />
+      )}
+
+      {confirmingDelete && selected && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onClick={() => {
+            if (!deletingSession) setConfirmingDelete(false)
+          }}
+        >
+          <div
+            className="modal confirm"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Delete session"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="modal-head">
+              <div>
+                <h2>Delete session</h2>
+                <p className="modal-sub">
+                  Deletes <code>{displaySessionTitle(selected)}</code> from S2. This can&rsquo;t be undone.
+                </p>
+              </div>
+            </div>
+            <div className="modal-foot">
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => setConfirmingDelete(false)}
+                disabled={deletingSession}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="danger-button"
+                onClick={() => void deleteSelected()}
+                disabled={deletingSession}
+              >
+                {deletingSession ? (
+                  <LoaderCircle size={15} aria-hidden="true" className="spin" />
+                ) : (
+                  <Trash2 size={15} aria-hidden="true" />
+                )}
+                {deletingSession ? 'Deleting' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </main>
   )

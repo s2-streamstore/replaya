@@ -82,3 +82,10 @@ describe('ingest auth rejection', () => {
     expect(response.status).toBe(401)
   })
 })
+
+describe('session deletion', () => {
+  it('validates the session id before touching storage', async () => {
+    const response = await fetch(`${base}/api/sessions/not-a-valid-id`, { method: 'DELETE' })
+    expect(response.status).toBe(400)
+  })
+})

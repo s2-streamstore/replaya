@@ -556,6 +556,37 @@
   color: var(--text-strong);
 }
 
+.icon-button.danger:hover {
+  border-color: var(--danger-border);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.danger-button {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 13px;
+  border: 1px solid transparent;
+  border-radius: var(--r);
+  background: var(--danger);
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 550;
+  transition: background 0.12s ease;
+}
+
+.danger-button:hover {
+  background: #912018;
+}
+
+.danger-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 /* ============================================================
    Pagination
    ============================================================ */
@@ -878,6 +909,24 @@
   border-radius: var(--r-lg);
   background: var(--surface);
   box-shadow: 0 20px 48px rgba(16, 24, 40, 0.18);
+}
+
+.modal.confirm {
+  max-width: 440px;
+}
+
+.modal.confirm .modal-sub code {
+  color: var(--text-strong);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.modal-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 16px 20px;
+  border-top: 1px solid var(--border);
 }
 
 .modal-head {

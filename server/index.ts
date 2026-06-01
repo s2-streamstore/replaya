@@ -1532,6 +1532,22 @@ app.get(
   }),
 )
 
+// Admin/read-side surface (deploy behind your access boundary): purge a
+// session's stream on demand instead of waiting out retention. Idempotent.
+app.delete(
+  '/api/sessions/:id',
+  asyncRoute(async (request, response) => {
+    const sessionId = parseSessionId(paramString(request.params.id))
+    const { basin } = requireS2()
+    try {
+      await basin.streams.delete({ stream: sessionStreamName(sessionId) })
+    } catch (error) {
+      if (!isS2Status(error, 404)) throw error
+    }
+    response.json({ deleted: sessionId })
+  }),
+)
+
 app.post(
   '/api/sessions/:id/events',
   asyncRoute(async (request, response) => {
