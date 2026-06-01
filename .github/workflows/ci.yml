@@ -14,30 +14,38 @@ jobs:
         node-version: [20.x, 24.x]
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.3.0
+          run_install: false
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
-          cache: npm
-      - run: npm ci
-      - run: npm run lint
-      - run: npm run build
-      - run: npm test
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm build
+      - run: pnpm test
 
   integration:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.3.0
+          run_install: false
       - uses: actions/setup-node@v4
         with:
           node-version: 24.x
-          cache: npm
+          cache: pnpm
       - name: Start s2 lite (in-memory S2 emulator)
         run: docker run -d --name s2lite -p 8080:80 ghcr.io/s2-streamstore/s2 lite
       - name: Wait for s2 lite
         run: timeout 60 bash -c 'until curl -s -o /dev/null http://localhost:8080; do sleep 1; done'
-      - run: npm ci
+      - run: pnpm install --frozen-lockfile
       - name: Integration tests (create → append → replay → delete)
-        run: npm run test:integration
+        run: pnpm test:integration
         env:
           S2_TEST_ENDPOINT: http://localhost:8080
       - name: s2 lite logs

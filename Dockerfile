@@ -3,10 +3,10 @@
 # ---- build ----
 FROM node:24-slim AS build
 WORKDIR /app
-COPY package.json package-lock.json ./
-RUN npm ci
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN corepack enable && pnpm install --frozen-lockfile
 COPY . .
-RUN npm run build
+RUN pnpm build
 
 # ---- runtime ----
 FROM node:24-slim AS runtime
@@ -15,8 +15,8 @@ WORKDIR /app
 
 # Production deps only. rrweb stays (it's a runtime dependency: the server
 # serves /vendor/rrweb.min.js from node_modules).
-COPY package.json package-lock.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN corepack enable && pnpm install --prod --frozen-lockfile && pnpm store prune
 
 # Compiled server + built client assets.
 COPY --from=build /app/dist-server ./dist-server
