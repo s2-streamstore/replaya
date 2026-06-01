@@ -604,8 +604,10 @@ ${initOptions.join(',\n')}
       <header className="topbar">
         <div className="product-mark">
           <span className="app-logo" aria-hidden="true">
-            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <path d="M9 7.5v9l7.5-4.5z" fill="currentColor" />
+            <svg className="logo-glyph" width="24" height="24" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+              <circle className="logo-sun" cx="23.2" cy="8" r="3.2" />
+              <path className="logo-start-bar" d="M10.1 11.5v8.3" />
+              <path className="logo-play" d="M13.5 11.3v8.8l7.3-4.4z" />
             </svg>
           </span>
           <div className="wordmark">

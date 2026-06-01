@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="public/favicon.svg" alt="RePlaya logo" width="96" height="96">
+</p>
+
 # RePlaya
 
 Self-hosted session replay built on [S2](https://s2.dev/). Each session is stored as one S2 stream, and that stream is the whole backend — there's no separate database, message bus, object store, or search index. Because an S2 stream can be tailed as it's written, RePlaya can replay a session live, while the visitor is still on the page, as well as play back finished ones. Add the recorder snippet to your site and sessions are stored as streams you can replay, live-tail, filter, and export.
