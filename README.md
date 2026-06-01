@@ -1,17 +1,39 @@
 # RePlaya
 
-RePlaya is an OSS session capture and replay tool you host yourself. The only external storage/service dependency is [S2](https://s2.dev/), which can be S2 Cloud or a compatible self-hosted s2-lite deployment when you point the endpoints at it.
+Self-hosted session replay built on [S2](https://s2.dev/). Each session is stored as one S2 stream, and that stream is the whole backend — there's no separate database, message queue, object store, or search index. Because an S2 stream can be tailed as it's written, RePlaya can replay a session live, while the visitor is still on the page, as well as play back finished ones. Add the recorder snippet to your site and sessions land in streams you can replay, live-tail, search, and export.
 
-The architecture is intentionally small:
+## Demo
 
-1. A page loads RePlaya's drop-in browser recorder from your deployment.
-2. The browser posts rrweb event batches to your self-hosted RePlaya API.
-3. The API writes and reads ordered session streams in S2.
-4. The internal dashboard replays those streams with rrweb-player.
+<p align="center">
+  <img src="docs/demo.gif" alt="RePlaya dashboard: a new session goes active and replays in real time as the user clicks through their app" width="900">
+</p>
 
-The browser never receives the S2 token. All S2 reads and writes are proxied through your RePlaya server.
+<p align="center"><em>A new session appears in the list and is live-tailed from its S2 stream — the replay and activity feed update as the visitor uses the app. (<a href="docs/demo.mp4">MP4</a>)</em></p>
 
-## Run
+## How it works on S2
+
+A session recording is a log: an append-only, ordered, timestamped sequence of events. RePlaya stores each session as one S2 stream and reads it back the same way, so a single primitive covers what's often split across several systems.
+
+- **Storage.** rrweb events are appended to the tail of the session's stream over the S2 Producer API, which batches with backpressure and acks each batch once it's durable. The stream is the recording — there's no separate blob store, and nothing buffers on the server between ingest and storage.
+- **Timeline.** Session streams use `timestamping.mode: client-require`, so the rrweb capture time is written into each record's S2 timestamp and read back as the scrub timeline. (Create, stop, and heartbeat records use server wall-clock time.)
+- **Listing.** S2 lists streams in lexicographic order, so each stream is named by an inverted timestamp; `streams.list({ prefix: "sessions/" })` then returns newest-first with `startAfter` paging — no database keeping an order in sync. A best-effort sidecar index stream is tailed to update the list as new sessions start.
+- **Live tail.** `GET /api/sessions/:id/live` opens an S2 read session from the snapshot tail and bridges new records to the browser over SSE, where they're appended to the mounted player. The same stream serves both the historical scrub and the live edge.
+- **Concurrency.** Stream creation and stop write `active` / `stopped` fencing tokens; event and heartbeat appends are fenced on `active`, so a finished session can't be resurrected by a late writer.
+
+Streams are created on first append (`createStreamOnAppend`), inheriting the basin's default config, so there's no stream provisioning to manage. That leaves one external dependency: point RePlaya at S2 Cloud, or at a self-hosted [s2-lite](https://github.com/s2-streamstore/s2) to keep everything in your own infrastructure. Recordings live in your own basin — URI-addressable, with configurable retention and on-demand deletion. The browser never receives the S2 token; all S2 reads and writes go through the RePlaya server.
+
+For comparison with a typical session-replay backend:
+
+| | Typical replay backend | RePlaya |
+| --- | --- | --- |
+| Services to run | Message bus, analytics store, relational DB, object store, search index | One Node server + S2 |
+| Live sessions | Usually playback after an ingest/flush delay | Live tail of active sessions, off the same stream |
+| Stored recording | Blobs in object storage; metadata across databases | One ordered S2 stream per session |
+| Self-host footprint | A multi-service cluster, often on Kubernetes | A single process + S2 (or self-hosted s2-lite) |
+
+Dashboard search is a client-side filter over the sessions already listed — S2 provides ordering and newest-first listing, not full-text search. See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the full design.
+
+## Quickstart
 
 ```bash
 npm install
@@ -20,64 +42,15 @@ npm run dev
 
 The API runs on `http://localhost:8787` and Vite serves the app on `http://localhost:5173`.
 
-For a production-style local run:
+For a production-style local run, build and serve everything from Express on one port:
 
 ```bash
 npm run build
 npm start
+# open http://localhost:8787
 ```
 
-Then open `http://localhost:8787`.
-
-## Drop-in Recorder
-
-```html
-<script>
-  !function(w,d,s,u){w.replaya=w.replaya||function(){(w.replaya.q=w.replaya.q||[]).push(arguments)};var e=d.createElement(s);e.async=1;e.src=u;d.head.appendChild(e)}(window,document,"script","http://localhost:8787/recorder.js");
-  replaya("init", {
-    apiHost: "http://localhost:8787",
-    source: "web-app"
-  });
-</script>
-```
-
-Use `http://localhost:8787/recorder-test` for a local page that records through the same script.
-
-`source` is optional metadata for grouping captures by app, site, environment, or tenant. `distinctId` and `userId` can be passed when the recorder should tag sessions with application identity.
-
-By default, the recorder **masks all input, select, and textarea values** (rrweb `maskAllInputs`), so end-user keystrokes — passwords, emails, anything typed — are not sent to the server. To capture raw form control state on a page where that is acceptable (e.g. an internal admin UI), pass `maskAllInputs: false` to `replaya("init", ...)`, or add `data-mask-all-inputs="false"` to the recorder script tag.
-
-Masking covers input values only; text the page renders into the DOM is still recorded. Wrap sensitive regions in the `replaya-block` class to omit them from the recording, or `replaya-ignore` to skip a subtree's changes.
-
-## S2 Stream Policy
-
-RePlaya uses basin defaults as the source of truth for new streams. Basin-level `createStreamOnAppend` is enabled, so the first append creates a session stream with the default stream config. `createStreamOnRead` remains disabled.
-
-Session streams use:
-
-- `timestamping.mode: client-require`
-- `createStreamOnAppend: true`
-- `createStreamOnRead: false`
-- `deleteOnEmpty.minAgeSecs: 86400`
-- `retentionPolicy.ageSecs: 2419200`
-
-Every appended record is timestamped because `client-require` demands it. Event records use the rrweb capture timestamp. Create, stop, and heartbeat records use server wall-clock timestamps so S2 tail reads report durable liveness.
-
-Replay events use S2 record timestamps as the scrub timeline. RePlaya writes the rrweb capture time into the S2 timestamp field, reads the S2 timestamp back, and passes that timestamp to rrweb-player.
-
-Writes use the S2 Producer API, which batches event records over an append session and applies backpressure. RePlaya stores each replay in reverse-time stream names such as `sessions/8235/832/123/456/session-mpsphcyj-ffccffdbc1`. Because S2 stream listing is lexicographic ascending, the inverted timestamp path makes `streams.list({ prefix: "sessions/" })` return newest sessions first without a separate index stream.
-
-Dashboard listing does not read full replay streams. It lists reverse-time stream names with cursor paging (`limit` plus `startAfter`), then parallel-reads the create metadata and a one-record tail window with `tailOffset: 1`. The tail read returns `batch.tail`, which RePlaya uses for the raw next sequence number and last timestamp; the last user record supplies display metadata and explicit stop detection.
-
-New session discovery also writes a best-effort index record to the sidecar index stream, `sessions.index/sessions` by default, after the session stream is created. Each index record body is only the session stream name. The stream list remains authoritative; when the dashboard is viewing the newest page, it tails this index stream from the pre-list tail sequence number and resolves each new name back through the normal session summary path so the list updates in real time.
-
-Session streams use S2 fencing to make stop terminal. Fence changes are command records appended to the stream, so they consume sequence numbers and affect raw tail positions. RePlaya creates the stream with an `active` fence command followed by active metadata, requires that fence for event and heartbeat appends, and stops with a single append containing a `stopped` fence command followed by stopped metadata as the final user-visible record. Reads set `ignoreCommandRecords` so replay and listing see metadata/events/heartbeats while raw tail positions still include fence records.
-
-Active selected sessions are live-tailed with S2 read sessions. The dashboard opens `/api/sessions/:id/live` from the snapshot tail sequence number, the server bridges S2's streaming read to browser SSE, and new records are appended to the mounted rrweb player without a manual reload.
-
-## Configuration
-
-Server-only S2 configuration lives in `.env.local`.
+You'll need an S2 access token and a basin. Put them in `.env.local`:
 
 ```bash
 S2_ACCESS_TOKEN=replace-with-an-s2-access-token
@@ -86,7 +59,43 @@ S2_STREAM_PREFIX=sessions/
 PORT=8787
 ```
 
-For a practical production deployment, put dashboard/read access behind your platform access layer and run RePlaya with scoped ingest enabled:
+The basin is created on first use with RePlaya's stream defaults. The dashboard's health pill reports the basin and the effective S2 endpoints so you can confirm what you're pointed at. To use s2-lite or another compatible deployment instead of S2 Cloud, set the endpoints explicitly:
+
+```bash
+S2_ACCOUNT_ENDPOINT=http://localhost:7070
+S2_BASIN_ENDPOINT=http://localhost:7070
+```
+
+## Drop-in recorder
+
+Add this to any page to start capturing, pointing it at your RePlaya host:
+
+```html
+<script>
+  !function(w,d,s,u){w.replaya=w.replaya||function(){(w.replaya.q=w.replaya.q||[]).push(arguments)};var e=d.createElement(s);e.async=1;e.src=u;d.head.appendChild(e)}(window,document,"script","https://replaya.example.com/recorder.js");
+  replaya("init", {
+    apiHost: "https://replaya.example.com",
+    source: "web-app"
+  });
+</script>
+```
+
+In local development that host is `http://localhost:8787`, and `/recorder-test` serves a page that records through the same script.
+
+`source` is optional metadata for grouping captures by app, site, environment, or tenant. `distinctId` and `userId` can be passed to tag sessions with application identity.
+
+By default, the recorder **masks all input, select, and textarea values** (rrweb `maskAllInputs`), so end-user keystrokes — passwords, emails, anything typed — are never sent to the server. To capture raw form control state on a page where that's acceptable (e.g. an internal admin UI), pass `maskAllInputs: false` to `replaya("init", ...)`, or add `data-mask-all-inputs="false"` to the recorder script tag.
+
+Masking covers input values only; text the page renders into the DOM is still recorded. Wrap sensitive regions in the `replaya-block` class to omit them from the recording, or `replaya-ignore` to skip a subtree's changes.
+
+## Configuration & deployment
+
+Server-only S2 configuration lives in `.env.local` (see [Quickstart](#quickstart)). The read side has **no built-in authentication by design** — the deployment boundary *is* the access control. In production, RePlaya treats the collector as public, write-only surface area and the dashboard/read APIs as private surface area.
+
+1. **Don't expose the read APIs to the internet.** Bind the app to a private interface and put the dashboard, `GET /api/sessions*`, live tailing, and `/api/health` behind your SSO/access layer (VPN, Tailscale, Cloudflare Access, oauth2-proxy).
+2. **Expose only the collector publicly** — `GET /recorder.js`, `GET /vendor/rrweb.min.js`, and the write endpoints (`POST /api/sessions`, `/events`, `/heartbeat`, `/stop`) — and lock those down with `REPLAYA_ALLOWED_CAPTURE_ORIGINS` + `REPLAYA_PROJECT_KEY`.
+3. **Set `NODE_ENV=production`** so ingest auth is enforced, originless ingest is rejected, and the recorder test fixture is disabled.
+4. **Set `REPLAYA_APPEND_TOKEN_SECRET`** to a stable random value (e.g. `openssl rand -hex 32`). With ingest auth enabled (the production default), the server refuses to start without it. Set `REPLAYA_TRUST_PROXY=true` if you run behind a reverse proxy so per-client rate limits use the real client IP.
 
 ```bash
 NODE_ENV=production
@@ -106,31 +115,17 @@ replaya("init", {
 });
 ```
 
-In production, RePlaya treats the collector as public write-only surface area and the dashboard/read APIs as private deployment surface area. The app does not implement dashboard auth for now; deploy the dashboard, session listing, replay reads, live tailing, and health endpoint behind your platform boundary, such as VPN, Tailscale, Cloudflare Access, oauth2-proxy, or a private network. Recorder ingest requires an allowed origin plus `REPLAYA_PROJECT_KEY`; session create returns a short-lived append token that the recorder sends with event, heartbeat, and stop writes. `REPLAYA_ENABLE_RECORDER_TEST` defaults off in production.
-
-When ingest auth is enabled, `REPLAYA_APPEND_TOKEN_SECRET` is **required**: the server refuses to start in production without it (it no longer falls back to the S2 access token), so set it to a stable random value such as `openssl rand -hex 32`.
-
-### Self-hosted deployment (single team)
-
-The read side has no built-in authentication by design, so the deployment boundary *is* the access control. Concretely:
-
-1. **Don't expose the read APIs to the internet.** Bind the app to a private interface/network and put the dashboard, `GET /api/sessions*`, live tailing, and `/api/health` behind your SSO/access layer (VPN, Tailscale, Cloudflare Access, oauth2-proxy).
-2. **Expose only the collector publicly** — `GET /recorder.js`, `GET /vendor/*`, and the write endpoints (`POST /api/sessions`, `/events`, `/heartbeat`, `/stop`) — and lock those down with `REPLAYA_ALLOWED_CAPTURE_ORIGINS` + `REPLAYA_PROJECT_KEY`.
-3. **Set `NODE_ENV=production`** so ingest auth is enforced, originless ingest is rejected, and the recorder test fixture is disabled.
-4. **Set `REPLAYA_APPEND_TOKEN_SECRET`** to a stable secret (see above), and `REPLAYA_TRUST_PROXY=true` if you run behind a reverse proxy so per-client rate limits use the real client IP.
-
-Useful security limits:
+Session create returns a short-lived append token that the recorder sends with event, heartbeat, and stop writes. Useful limits and knobs:
 
 - `REPLAYA_SESSION_CREATE_RATE_LIMIT` default `60` per minute per client/project.
 - `REPLAYA_SESSION_APPEND_RATE_LIMIT` default `600` per minute per client/session.
 - `REPLAYA_MAX_EVENTS_PER_BATCH` default `100`.
 - `REPLAYA_JSON_BODY_LIMIT` default `8mb`.
 - `REPLAYA_APPEND_TOKEN_TTL_MS` default `86400000`.
+- `REPLAYA_LOG_REQUESTS` — access log for every request. Defaults on in development, off in production; failed requests (4xx/5xx) are always logged.
+- `REPLAYA_SHUTDOWN_GRACE_MS` default `10000`. On `SIGTERM`/`SIGINT` the server drains in-flight requests, drops lingering live-tail streams after ~3s, and hard-exits at the grace deadline.
 
-Operational knobs:
-
-- `REPLAYA_LOG_REQUESTS` — access log for every request. Defaults on in development, off in production (where high-volume ingest would flood logs); failed requests (4xx/5xx) are always logged.
-- `REPLAYA_SHUTDOWN_GRACE_MS` default `10000`. On `SIGTERM`/`SIGINT` the server stops accepting connections and drains in-flight requests; lingering live-tail streams are dropped after ~3s so it can exit cleanly, with a hard exit at the grace deadline.
+See [`ARCHITECTURE.md`](ARCHITECTURE.md#security--request-boundary) for how the boundary, ingest auth, and append tokens fit together.
 
 ### Docker
 
@@ -145,18 +140,9 @@ docker run --rm -p 8787:8787 \
   replaya
 ```
 
-The image runs the single compiled server (`node dist-server/server/index.js`) as a non-root user and includes a `HEALTHCHECK` against `/api/health`. Remember the access-boundary checklist above: only the collector and recorder routes should be publicly reachable.
+The image runs the single compiled server (`node dist-server/server/index.js`) as a non-root user and includes a `HEALTHCHECK` against `/api/health`. Only the collector and recorder routes should be publicly reachable.
 
-> Pass secrets with `-e VAR=value` (or a secrets manager), not by reusing a local `.env`. `docker --env-file` does not strip surrounding quotes the way `dotenv` does, so a quoted value like `S2_ACCESS_TOKEN="..."` would be sent to the container with the quotes included.
-
-By default, the SDK uses S2 Cloud. To target s2-lite or another compatible deployment, set the account and basin endpoints explicitly:
-
-```bash
-S2_ACCOUNT_ENDPOINT=http://localhost:7070
-S2_BASIN_ENDPOINT=http://localhost:7070
-```
-
-The dashboard health endpoint reports the effective account and basin endpoints so you can confirm which S2 backend RePlaya is using.
+> Pass secrets with `-e VAR=value` (or a secrets manager), not by reusing a local `.env`. `docker --env-file` does not strip surrounding quotes the way `dotenv` does, so a quoted value like `S2_ACCESS_TOKEN="..."` would reach the container with the quotes included.
 
 ## Scripts
 
@@ -171,7 +157,7 @@ The dashboard health endpoint reports the effective account and basin endpoints 
 
 `npm test` covers recorder invariants and an HTTP smoke of the server (recorder delivery, security headers, ingest-auth rejection) without needing S2.
 
-The integration tests exercise the real create → append → replay → delete path against [`s2 lite`](https://github.com/s2-streamstore/s2), the in-memory S2 emulator. They are skipped unless `S2_TEST_ENDPOINT` is set:
+The integration tests exercise the real create → append → replay → delete path against [`s2 lite`](https://github.com/s2-streamstore/s2), the in-memory S2 emulator. They're skipped unless `S2_TEST_ENDPOINT` is set:
 
 ```bash
 docker run -d -p 8080:80 ghcr.io/s2-streamstore/s2 lite
