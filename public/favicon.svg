@@ -1,6 +1,18 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <rect width="64" height="64" rx="14" fill="#0f766e"/>
-  <path d="M18 17h28v30H18z" fill="none" stroke="#d8f3ee" stroke-width="4" stroke-linejoin="round"/>
-  <path d="M28 26v12l11-6z" fill="#ffffff"/>
-  <path d="M18 23h28M18 41h28" stroke="#d8f3ee" stroke-width="4"/>
+  <defs>
+    <linearGradient id="sky" x1="16" x2="50" y1="0" y2="34" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#86e0ec"/>
+      <stop offset="1" stop-color="#35b6c7"/>
+    </linearGradient>
+    <linearGradient id="sand" x1="12" x2="54" y1="42" y2="64" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#f8dc93"/>
+      <stop offset="1" stop-color="#e5ad45"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="url(#sky)"/>
+  <path d="M0 27h64v15H0z" fill="#0f766e"/>
+  <path d="M0 42h64v22H0z" fill="url(#sand)"/>
+  <circle cx="47.5" cy="15.5" r="7" fill="#fef3c7"/>
+  <path d="M20.8 23.8v17.4" fill="none" stroke="#fff" stroke-width="5.6" stroke-linecap="round"/>
+  <path d="M27 23.5v18l15-9z" fill="#fff"/>
 </svg>
