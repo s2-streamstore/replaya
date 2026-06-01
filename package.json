@@ -4,12 +4,17 @@
   "version": "0.0.0",
   "license": "MIT",
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "concurrently -k -n api,web -c cyan,green \"npm:dev:server\" \"npm:dev:client\"",
     "dev:client": "vite --host 0.0.0.0",
     "dev:server": "tsx watch server/index.ts",
     "build": "tsc -b && tsc -p tsconfig.server.json && vite build",
     "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "preview": "vite preview",
     "start": "node dist-server/server/index.js"
   },
@@ -21,8 +26,8 @@
     "lucide-react": "^1.17.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
-    "rrweb": "^2.0.0-alpha.4",
-    "rrweb-player": "^1.0.0-alpha.4"
+    "rrweb": "2.0.0-alpha.4",
+    "rrweb-player": "1.0.0-alpha.4"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -38,6 +43,7 @@
     "tsx": "^4.22.3",
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.59.2",
-    "vite": "^8.0.12"
+    "vite": "^8.0.12",
+    "vitest": "^3.2.4"
   }
 }

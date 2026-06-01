@@ -45,7 +45,9 @@ Use `http://localhost:8787/recorder-test` for a local page that records through 
 
 `source` is optional metadata for grouping captures by app, site, environment, or tenant. `distinctId` and `userId` can be passed when the recorder should tag sessions with application identity.
 
-By default, the recorder captures form control state so replays match the UI that users saw. Pass `maskAllInputs: true` to `replaya("init", ...)`, or add `data-mask-all-inputs="true"` to the recorder script tag, when a page should redact all input/select/textarea values.
+By default, the recorder **masks all input, select, and textarea values** (rrweb `maskAllInputs`), so end-user keystrokes — passwords, emails, anything typed — are not sent to the server. To capture raw form control state on a page where that is acceptable (e.g. an internal admin UI), pass `maskAllInputs: false` to `replaya("init", ...)`, or add `data-mask-all-inputs="false"` to the recorder script tag.
+
+Masking covers input values only; text the page renders into the DOM is still recorded. Wrap sensitive regions in the `replaya-block` class to omit them from the recording, or `replaya-ignore` to skip a subtree's changes.
 
 ## S2 Stream Policy
 
@@ -106,6 +108,17 @@ replaya("init", {
 
 In production, RePlaya treats the collector as public write-only surface area and the dashboard/read APIs as private deployment surface area. The app does not implement dashboard auth for now; deploy the dashboard, session listing, replay reads, live tailing, and health endpoint behind your platform boundary, such as VPN, Tailscale, Cloudflare Access, oauth2-proxy, or a private network. Recorder ingest requires an allowed origin plus `REPLAYA_PROJECT_KEY`; session create returns a short-lived append token that the recorder sends with event, heartbeat, and stop writes. `REPLAYA_ENABLE_RECORDER_TEST` defaults off in production.
 
+When ingest auth is enabled, `REPLAYA_APPEND_TOKEN_SECRET` is **required**: the server refuses to start in production without it (it no longer falls back to the S2 access token), so set it to a stable random value such as `openssl rand -hex 32`.
+
+### Self-hosted deployment (single team)
+
+The read side has no built-in authentication by design, so the deployment boundary *is* the access control. Concretely:
+
+1. **Don't expose the read APIs to the internet.** Bind the app to a private interface/network and put the dashboard, `GET /api/sessions*`, live tailing, and `/api/health` behind your SSO/access layer (VPN, Tailscale, Cloudflare Access, oauth2-proxy).
+2. **Expose only the collector publicly** — `GET /recorder.js`, `GET /vendor/*`, and the write endpoints (`POST /api/sessions`, `/events`, `/heartbeat`, `/stop`) — and lock those down with `REPLAYA_ALLOWED_CAPTURE_ORIGINS` + `REPLAYA_PROJECT_KEY`.
+3. **Set `NODE_ENV=production`** so ingest auth is enforced, originless ingest is rejected, and the recorder test fixture is disabled.
+4. **Set `REPLAYA_APPEND_TOKEN_SECRET`** to a stable secret (see above), and `REPLAYA_TRUST_PROXY=true` if you run behind a reverse proxy so per-client rate limits use the real client IP.
+
 Useful security limits:
 
 - `REPLAYA_SESSION_CREATE_RATE_LIMIT` default `60` per minute per client/project.
@@ -113,6 +126,28 @@ Useful security limits:
 - `REPLAYA_MAX_EVENTS_PER_BATCH` default `100`.
 - `REPLAYA_JSON_BODY_LIMIT` default `8mb`.
 - `REPLAYA_APPEND_TOKEN_TTL_MS` default `86400000`.
+
+Operational knobs:
+
+- `REPLAYA_LOG_REQUESTS` — access log for every request. Defaults on in development, off in production (where high-volume ingest would flood logs); failed requests (4xx/5xx) are always logged.
+- `REPLAYA_SHUTDOWN_GRACE_MS` default `10000`. On `SIGTERM`/`SIGINT` the server stops accepting connections and drains in-flight requests; lingering live-tail streams are dropped after ~3s so it can exit cleanly, with a hard exit at the grace deadline.
+
+### Docker
+
+```bash
+docker build -t replaya .
+docker run --rm -p 8787:8787 \
+  -e NODE_ENV=production \
+  -e S2_ACCESS_TOKEN=... -e S2_BASIN=... \
+  -e REPLAYA_PROJECT_KEY=pk_live_... \
+  -e REPLAYA_APPEND_TOKEN_SECRET="$(openssl rand -hex 32)" \
+  -e REPLAYA_ALLOWED_CAPTURE_ORIGINS=https://app.example.com \
+  replaya
+```
+
+The image runs the single compiled server (`node dist-server/server/index.js`) as a non-root user and includes a `HEALTHCHECK` against `/api/health`. Remember the access-boundary checklist above: only the collector and recorder routes should be publicly reachable.
+
+> Pass secrets with `-e VAR=value` (or a secrets manager), not by reusing a local `.env`. `docker --env-file` does not strip surrounding quotes the way `dotenv` does, so a quoted value like `S2_ACCESS_TOKEN="..."` would be sent to the container with the quotes included.
 
 By default, the SDK uses S2 Cloud. To target s2-lite or another compatible deployment, set the account and basin endpoints explicitly:
 

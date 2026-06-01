@@ -58,6 +58,10 @@ export const api = {
     return request<{ session: SessionDetail }>(`/sessions/${id}`)
   },
 
+  deleteSession(id: string) {
+    return request<{ deleted: string }>(`/sessions/${id}`, { method: 'DELETE' })
+  },
+
   liveSessionUrl(id: string, fromSeqNum: number) {
     return `/api/sessions/${encodeURIComponent(id)}/live?fromSeqNum=${encodeURIComponent(String(fromSeqNum))}`
   },

@@ -16,12 +16,16 @@ export function recorderScript() {
     userId: script && script.dataset.userId || "",
     projectKey: script && script.dataset.projectKey || "",
     autostart: !(script && script.dataset.autostart === "false"),
-    maskAllInputs: Boolean(script && script.dataset.maskAllInputs === "true"),
+    maskAllInputs: !(script && script.dataset.maskAllInputs === "false"),
     blockClass: "replaya-block",
     ignoreClass: "replaya-ignore",
     flushEveryMs: 250,
     heartbeatEveryMs: 10000,
-    flushAt: 20
+    flushAt: 20,
+    flushBackoffMs: 1000,
+    flushBackoffMaxMs: 30000,
+    maxBufferEvents: 1000,
+    beaconMaxBytes: 60000
   };
 
   var sessionId = null;
@@ -32,6 +36,7 @@ export function recorderScript() {
   var sentEventCount = 0;
   var sessionToken = "";
   var flushing = false;
+  var flushFailures = 0;
   var starting = null;
   var stopped = false;
 
@@ -49,7 +54,13 @@ export function recorderScript() {
   function postJson(path, body, keepalive) {
     var payload = JSON.stringify(body);
     if (keepalive && navigator.sendBeacon) {
-      return navigator.sendBeacon(apiUrl(path), new Blob([payload], { type: "application/json" }));
+      var blob = new Blob([payload], { type: "application/json" });
+      // sendBeacon silently drops payloads past ~64KB. Only use it when the
+      // payload is comfortably small, and fall through to keepalive fetch if
+      // the browser's beacon queue still rejects it.
+      if (blob.size <= config.beaconMaxBytes && navigator.sendBeacon(apiUrl(path), blob)) {
+        return true;
+      }
     }
 
     return fetch(apiUrl(path), {
@@ -123,6 +134,21 @@ export function recorderScript() {
     heartbeatTimer = setInterval(sendHeartbeat, config.heartbeatEveryMs);
   }
 
+  function requeue(batch) {
+    buffer = batch.concat(buffer);
+    if (buffer.length > config.maxBufferEvents) {
+      // Bound memory during a prolonged outage; keep the most recent events.
+      buffer = buffer.slice(buffer.length - config.maxBufferEvents);
+    }
+  }
+
+  function scheduleRetry() {
+    clearTimeout(flushTimer);
+    var delay = Math.min(config.flushBackoffMs * Math.pow(2, flushFailures), config.flushBackoffMaxMs);
+    flushFailures++;
+    flushTimer = setTimeout(flush, delay);
+  }
+
   function flush(keepalive) {
     if (!sessionId || flushing || buffer.length === 0) return Promise.resolve();
 
@@ -134,19 +160,20 @@ export function recorderScript() {
       events: batch,
       eventCount: nextEventCount
     }), keepalive))
-      .then(function (result) {
-        if (result === false) {
-          buffer = batch.concat(buffer);
-        } else {
-          sentEventCount = Math.max(sentEventCount, nextEventCount);
-        }
+      .then(function () {
+        sentEventCount = Math.max(sentEventCount, nextEventCount);
+        flushFailures = 0;
       })
       .catch(function () {
-        if (!keepalive) buffer = batch.concat(buffer);
+        // Page-unload (keepalive) flushes can't retry; drop rather than block unload.
+        if (!keepalive) {
+          requeue(batch);
+          scheduleRetry();
+        }
       })
       .then(function () {
         flushing = false;
-        if (buffer.length > 0 && !keepalive) scheduleFlush();
+        if (buffer.length > 0 && !keepalive && flushFailures === 0) scheduleFlush();
       });
   }
 
@@ -178,6 +205,13 @@ export function recorderScript() {
         startHeartbeat();
         return sessionId;
       })
+      .catch(function (error) {
+        // Recording must never break the host page: swallow start failures.
+        if (typeof console !== "undefined" && console.warn) {
+          console.warn("[replaya] recorder failed to start", error);
+        }
+        return null;
+      })
       .finally(function () {
         starting = null;
       });
@@ -201,7 +235,7 @@ export function recorderScript() {
           eventCount: sentEventCount
         }));
       }
-    });
+    }).catch(function () {});
   }
 
   function command(name, options) {
@@ -243,7 +277,7 @@ export function recorderScript() {
 })();`
 }
 
-export function recorderTestPage(origin: string) {
+export function recorderTestPage() {
   return String.raw`<!doctype html>
 <html lang="en">
   <head>
@@ -291,8 +325,8 @@ export function recorderTestPage(origin: string) {
       </div>
     </main>
     <script>
-      !function(w,d,s,u){w.replaya=w.replaya||function(){(w.replaya.q=w.replaya.q||[]).push(arguments)};var e=d.createElement(s);e.async=1;e.src=u;d.head.appendChild(e)}(window,document,"script","${origin}/recorder.js");
-      replaya("init", { apiHost: "${origin}", source: "local-fixture", title: "Recorder fixture" });
+      !function(w,d,s,u){w.replaya=w.replaya||function(){(w.replaya.q=w.replaya.q||[]).push(arguments)};var e=d.createElement(s);e.async=1;e.src=u;d.head.appendChild(e)}(window,document,"script","/recorder.js");
+      replaya("init", { apiHost: window.location.origin, source: "local-fixture", title: "Recorder fixture" });
     </script>
   </body>
 </html>`

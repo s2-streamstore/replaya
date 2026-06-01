@@ -1,25 +1,60 @@
 :root {
-  --bg: #f4f6f8;
+  /* Canvas & surfaces */
+  --bg: #f7f8fa;
   --surface: #ffffff;
-  --surface-2: #f8fafc;
-  --border: #d8dee6;
-  --text: #475467;
-  --text-strong: #111827;
-  --muted: #667085;
-  --accent: #2563eb;
-  --accent-strong: #1d4ed8;
-  --accent-soft: #eff6ff;
-  --danger: #b42318;
-  --danger-soft: #fef2f2;
-  --warning: #92400e;
-  --warning-soft: #fffbeb;
-  --ink: #111827;
-  --shadow: 0 14px 34px rgba(15, 23, 42, 0.06);
-  --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --surface-2: #f6f7f9;
+  --surface-3: #f0f2f5;
 
-  font: 15px/1.45 var(--sans);
-  letter-spacing: 0;
+  /* Hairlines */
+  --border: #e7e9ee;
+  --border-strong: #d6dae1;
+
+  /* Text scale (zinc) */
+  --text-strong: #18181b;
+  --text: #3f3f46;
+  --muted: #71717a;
+  --faint: #a1a1aa;
+
+  /* Brand accent (teal — matches favicon) */
+  --accent: #0f766e;
+  --accent-hover: #115e59;
+  --accent-soft: #f0fdfa;
+  --accent-border: #99f6e4;
+
+  /* Ink — primary action */
+  --ink: #18181b;
+  --ink-hover: #000000;
+
+  /* Semantic status */
+  --success: #15803d;
+  --success-soft: #f0fdf4;
+  --success-border: #bbf7d0;
+  --danger: #b42318;
+  --danger-soft: #fef3f2;
+  --danger-border: #fecdca;
+  --warning: #b45309;
+  --warning-soft: #fffbeb;
+  --warning-border: #fde68a;
+  --info: #1d4ed8;
+  --info-soft: #eff6ff;
+  --info-border: #bfdbfe;
+
+  /* Radii */
+  --r-sm: 5px;
+  --r: 6px;
+  --r-lg: 8px;
+
+  /* Elevation — kept deliberately flat */
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.04);
+  --shadow: 0 1px 2px rgba(16, 24, 40, 0.05), 0 1px 3px rgba(16, 24, 40, 0.04);
+
+  --ring: 0 0 0 3px rgba(15, 118, 110, 0.18);
+
+  --sans: "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  font: 14px/1.5 var(--sans);
+  letter-spacing: -0.006em;
   color: var(--text);
   background: var(--bg);
   font-synthesis: none;
@@ -42,7 +77,7 @@ button,
 input,
 textarea {
   font: inherit;
-  letter-spacing: 0;
+  letter-spacing: inherit;
 }
 
 button {
@@ -51,7 +86,11 @@ button {
 
 button:disabled {
   cursor: not-allowed;
-  opacity: 0.55;
+}
+
+:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
 }
 
 #root {
@@ -69,5 +108,15 @@ h1,
 h2,
 h3 {
   color: var(--text-strong);
-  font-weight: 650;
+  font-weight: 600;
+  letter-spacing: -0.018em;
+}
+
+code {
+  font-family: var(--mono);
+}
+
+::selection {
+  background: var(--accent-soft);
+  color: var(--accent-hover);
 }

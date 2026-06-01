@@ -3,10 +3,12 @@ import express, {
   type ErrorRequestHandler,
   type NextFunction,
   type Request,
+  type RequestHandler,
   type Response,
 } from 'express'
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto'
 import { existsSync } from 'node:fs'
+import { pathToFileURL } from 'node:url'
 import path from 'node:path'
 import {
   AppendInput,
@@ -61,7 +63,8 @@ const ACTIVE_SESSION_LEASE_MS = Number(process.env.REPLAYA_ACTIVE_SESSION_LEASE_
 const INGEST_AUTH_REQUIRED = parseBooleanEnv(process.env.REPLAYA_INGEST_AUTH_REQUIRED, IS_PRODUCTION)
 const PROJECT_KEYS = splitConfigList(process.env.REPLAYA_PROJECT_KEYS ?? process.env.REPLAYA_PROJECT_KEY)
 const INGEST_AUTH_ENABLED = INGEST_AUTH_REQUIRED || PROJECT_KEYS.length > 0
-const APPEND_TOKEN_SECRET = process.env.REPLAYA_APPEND_TOKEN_SECRET ?? S2_ACCESS_TOKEN ?? randomUUID()
+const APPEND_TOKEN_SECRET_EXPLICIT = process.env.REPLAYA_APPEND_TOKEN_SECRET
+const APPEND_TOKEN_SECRET = APPEND_TOKEN_SECRET_EXPLICIT ?? randomUUID()
 const APPEND_TOKEN_TTL_MS = Number(process.env.REPLAYA_APPEND_TOKEN_TTL_MS ?? 1000 * 60 * 60 * 24)
 const ALLOWED_CAPTURE_ORIGINS = splitConfigList(process.env.REPLAYA_ALLOWED_CAPTURE_ORIGINS ?? process.env.CORS_ORIGIN)
 const ALLOW_ANY_CAPTURE_ORIGIN = ALLOWED_CAPTURE_ORIGINS.includes('*')
@@ -72,6 +75,8 @@ const SESSION_CREATE_RATE_LIMIT = Number(process.env.REPLAYA_SESSION_CREATE_RATE
 const SESSION_APPEND_RATE_LIMIT = Number(process.env.REPLAYA_SESSION_APPEND_RATE_LIMIT ?? 600)
 const RATE_LIMIT_WINDOW_MS = Number(process.env.REPLAYA_RATE_LIMIT_WINDOW_MS ?? 60_000)
 const MAX_EVENTS_PER_BATCH = Number(process.env.REPLAYA_MAX_EVENTS_PER_BATCH ?? 100)
+const LOG_REQUESTS = parseBooleanEnv(process.env.REPLAYA_LOG_REQUESTS, !IS_PRODUCTION)
+const SHUTDOWN_GRACE_MS = Number(process.env.REPLAYA_SHUTDOWN_GRACE_MS ?? 10_000)
 const SESSION_ID_PATTERN = /^session-[a-z0-9-]+$/
 const ACTIVE_FENCE_TOKEN = 'active'
 const STOPPED_FENCE_TOKEN = 'stopped'
@@ -311,9 +316,20 @@ function requireAppendToken(request: Request, sessionId: string, body: unknown) 
   }
 }
 
+const requestLogger: RequestHandler = (request, response, next) => {
+  const startedAt = Date.now()
+  response.on('finish', () => {
+    if (response.statusCode >= 400 || LOG_REQUESTS) {
+      console.log(`[replaya] ${request.method} ${request.originalUrl} ${response.statusCode} ${Date.now() - startedAt}ms`)
+    }
+  })
+  next()
+}
+
 const app = express()
 app.disable('x-powered-by')
 if (TRUST_PROXY) app.set('trust proxy', true)
+app.use(requestLogger)
 app.use(securityHeaders)
 app.use(corsMiddleware)
 app.use(express.json({ limit: JSON_BODY_LIMIT }))
@@ -1516,6 +1532,22 @@ app.get(
   }),
 )
 
+// Admin/read-side surface (deploy behind your access boundary): purge a
+// session's stream on demand instead of waiting out retention. Idempotent.
+app.delete(
+  '/api/sessions/:id',
+  asyncRoute(async (request, response) => {
+    const sessionId = parseSessionId(paramString(request.params.id))
+    const { basin } = requireS2()
+    try {
+      await basin.streams.delete({ stream: sessionStreamName(sessionId) })
+    } catch (error) {
+      if (!isS2Status(error, 404)) throw error
+    }
+    response.json({ deleted: sessionId })
+  }),
+)
+
 app.post(
   '/api/sessions/:id/events',
   asyncRoute(async (request, response) => {
@@ -1664,14 +1696,13 @@ app.get('/vendor/rrweb.min.js', (_request, response) => {
   response.sendFile(path.join(process.cwd(), 'node_modules/rrweb/dist/rrweb.min.js'))
 })
 
-app.get('/recorder-test', (request, response) => {
+app.get('/recorder-test', (_request, response) => {
   if (!RECORDER_TEST_ENABLED) {
     response.status(404).send('Not found')
     return
   }
 
-  const origin = `${request.protocol}://${request.get('host')}`
-  response.type('html').send(recorderTestPage(origin))
+  response.type('html').send(recorderTestPage())
 })
 
 const distPath = path.join(process.cwd(), 'dist')
@@ -1697,6 +1728,70 @@ const errorHandler: ErrorRequestHandler = (error, _request, response, next) => {
 
 app.use(errorHandler)
 
-app.listen(PORT, () => {
-  console.log(`RePlaya API listening on http://localhost:${PORT}`)
-})
+function assertStartupConfig() {
+  if (INGEST_AUTH_ENABLED && !APPEND_TOKEN_SECRET_EXPLICIT) {
+    const message =
+      'Ingest auth is enabled but REPLAYA_APPEND_TOKEN_SECRET is not set. Set it to a stable, random, secret value (e.g. `openssl rand -hex 32`).'
+    if (IS_PRODUCTION) {
+      console.error(`[replaya] ${message} Refusing to start.`)
+      process.exit(1)
+    }
+    console.warn(
+      `[replaya] ${message} Falling back to an ephemeral per-process secret — append tokens will not survive a restart or work across instances.`,
+    )
+  }
+}
+
+export function startServer() {
+  assertStartupConfig()
+
+  const server = app.listen(PORT, () => {
+    console.log(`RePlaya API listening on http://localhost:${PORT}`)
+  })
+
+  const openSockets = new Set<import('node:net').Socket>()
+  server.on('connection', (socket) => {
+    openSockets.add(socket)
+    socket.on('close', () => openSockets.delete(socket))
+  })
+
+  let shuttingDown = false
+  const shutdown = (signal: string) => {
+    if (shuttingDown) return
+    shuttingDown = true
+    console.log(`[replaya] ${signal} received — shutting down (grace ${SHUTDOWN_GRACE_MS}ms).`)
+
+    server.close((error) => {
+      if (error) {
+        console.error('[replaya] error while closing server', error)
+        process.exit(1)
+      }
+      console.log('[replaya] closed cleanly.')
+      process.exit(0)
+    })
+
+    // Let in-flight requests drain briefly, then drop lingering sockets
+    // (live-tail SSE streams never end on their own) so server.close() can finish.
+    setTimeout(() => {
+      for (const socket of openSockets) socket.destroy()
+    }, Math.min(3_000, SHUTDOWN_GRACE_MS)).unref()
+
+    // Hard cap so a stuck close can't wedge the process.
+    setTimeout(() => {
+      console.error('[replaya] forced exit after shutdown grace period.')
+      process.exit(1)
+    }, SHUTDOWN_GRACE_MS).unref()
+  }
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'))
+  process.on('SIGINT', () => shutdown('SIGINT'))
+
+  return server
+}
+
+export { app }
+
+// Start only when executed directly (not when imported by tests).
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  startServer()
+}
