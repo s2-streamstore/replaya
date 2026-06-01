@@ -168,6 +168,10 @@
 }
 
 .sessions-panel {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  max-height: calc(100svh - 36px);
+  overflow: hidden;
   position: sticky;
   top: 18px;
   padding: 12px;
@@ -291,8 +295,8 @@
 
 .session-list {
   display: grid;
+  min-height: 0;
   gap: 6px;
-  max-height: calc(100svh - 186px);
   margin-top: 10px;
   overflow: auto;
 }
@@ -410,9 +414,51 @@
   background: var(--surface-2);
 }
 
+.ghost-button:disabled,
+.icon-button:disabled,
+.primary-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
 .icon-button {
   width: 34px;
   padding: 0;
+}
+
+.session-pagination {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.pagination-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.pagination-button,
+.pagination-reset {
+  min-width: 0;
+}
+
+.pagination-button:last-child {
+  justify-self: end;
+}
+
+.pagination-status {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 720;
+  white-space: nowrap;
+}
+
+.pagination-reset {
+  width: 100%;
 }
 
 .replay-stats {
@@ -759,6 +805,8 @@
   }
 
   .sessions-panel {
+    max-height: none;
+    overflow: visible;
     position: static;
   }
 

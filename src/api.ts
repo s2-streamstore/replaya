@@ -4,8 +4,8 @@ import type {
   CreateSessionRequest,
   CreateSessionResponse,
   HealthResponse,
+  ListSessionsResponse,
   SessionDetail,
-  SessionSummary,
   StopSessionRequest,
 } from './shared/session'
 
@@ -38,8 +38,13 @@ export const api = {
     return request<HealthResponse>('/health')
   },
 
-  listSessions() {
-    return request<{ sessions: SessionSummary[] }>('/sessions')
+  listSessions(options: { limit?: number; startAfter?: string } = {}) {
+    const params = new URLSearchParams()
+    if (options.limit !== undefined) params.set('limit', String(options.limit))
+    if (options.startAfter) params.set('startAfter', options.startAfter)
+    const queryString = params.toString()
+    const query = queryString ? `?${queryString}` : ''
+    return request<ListSessionsResponse>(`/sessions${query}`)
   },
 
   createSession(body: CreateSessionRequest) {
@@ -55,6 +60,10 @@ export const api = {
 
   liveSessionUrl(id: string, fromSeqNum: number) {
     return `/api/sessions/${encodeURIComponent(id)}/live?fromSeqNum=${encodeURIComponent(String(fromSeqNum))}`
+  },
+
+  liveSessionIndexUrl(fromSeqNum: number) {
+    return `/api/sessions/index/live?fromSeqNum=${encodeURIComponent(String(fromSeqNum))}`
   },
 
   appendEvents(id: string, body: AppendEventsRequest) {

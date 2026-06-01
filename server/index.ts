@@ -28,7 +28,9 @@ import type {
   CreateSessionRequest,
   HeartbeatSessionRequest,
   HealthResponse,
+  ListSessionsResponse,
   LiveSessionMessage,
+  SessionIndexMessage,
   ReplayEvent,
   SessionDetail,
   SessionMetadata,
@@ -50,6 +52,7 @@ const NODE_ENV = process.env.NODE_ENV ?? 'development'
 const IS_PRODUCTION = NODE_ENV === 'production'
 const JSON_BODY_LIMIT = process.env.REPLAYA_JSON_BODY_LIMIT ?? '8mb'
 const SESSION_STREAM_PREFIX = `${STREAM_ROOT}/`
+const SESSION_INDEX_STREAM = `${STREAM_ROOT}.index/sessions`
 const REVERSE_TIME_MAX_MS = 9_999_999_999_999
 const REVERSE_TIME_WIDTH = String(REVERSE_TIME_MAX_MS).length
 const DELETE_ON_EMPTY_MIN_AGE_SECS = 60 * 60 * 24
@@ -407,6 +410,11 @@ function isCurrentSessionStreamName(streamName: string) {
   )
 }
 
+function parseSessionIndexStreamName(body: string) {
+  const streamName = body.trim()
+  return isCurrentSessionStreamName(streamName) ? streamName : null
+}
+
 function paramString(value: string | string[] | undefined) {
   if (typeof value !== 'string') {
     throw new HttpError(400, 'Missing route parameter.')
@@ -658,6 +666,28 @@ async function appendRecordsToStream(
     }
     throw error
   }
+}
+
+async function appendSessionIndexRecord(sessionId: string) {
+  return appendRecordsToStream(
+    SESSION_INDEX_STREAM,
+    [
+      AppendRecord.string({
+        body: sessionStreamName(sessionId),
+        timestamp: new Date(),
+      }),
+    ],
+    { useProducer: false },
+  )
+}
+
+function appendSessionIndexRecordBestEffort(sessionId: string) {
+  void appendSessionIndexRecord(sessionId).catch((error) => {
+    console.warn(
+      `Unable to append session ${sessionId} to ${SESSION_INDEX_STREAM}:`,
+      error instanceof Error ? error.message : error,
+    )
+  })
 }
 
 async function readStreamRecords(streamName: string) {
@@ -985,9 +1015,37 @@ async function loadSessionSummary(sessionId: string) {
   throw new HttpError(404, 'Session stream not found.')
 }
 
+async function loadSessionSummaryByStreamName(streamName: string) {
+  if (!isCurrentSessionStreamName(streamName)) {
+    throw new HttpError(400, 'Invalid session stream name.')
+  }
+
+  try {
+    const summary = summaryFromStreamSnapshot(await readStreamSnapshot(streamName))
+    if (summary) return summary
+  } catch (error) {
+    if (isS2Status(error, 404)) throw new HttpError(404, 'Session stream not found.')
+    throw error
+  }
+
+  throw new HttpError(404, 'Session stream not found.')
+}
+
+async function readSessionIndexTailSeqNum() {
+  const stream = await streamHandle(SESSION_INDEX_STREAM)
+  try {
+    return (await stream.checkTail()).tail.seqNum
+  } catch (error) {
+    if (isS2Status(error, 404)) return 0
+    throw error
+  }
+}
+
 async function listSessionSummaries(limit: number, startAfter?: string) {
   await ensureBasin()
   const { basin } = requireS2()
+  const latestPage = startAfter === undefined
+  const indexTailSeqNum = latestPage ? await readSessionIndexTailSeqNum() : null
   const page = await basin.streams.list({
     prefix: SESSION_STREAM_PREFIX,
     startAfter,
@@ -1012,6 +1070,8 @@ async function listSessionSummaries(limit: number, startAfter?: string) {
     summaries,
     hasMore: page.hasMore,
     nextStartAfter: page.streams.at(-1)?.name,
+    latestPage,
+    indexTailSeqNum,
   }
 }
 
@@ -1045,7 +1105,7 @@ function parseListLimit(value: unknown) {
   return parsed
 }
 
-function writeSse(response: Response, event: string, payload: LiveSessionMessage, id?: number) {
+function writeSse(response: Response, event: string, payload: LiveSessionMessage | SessionIndexMessage, id?: number) {
   if (id !== undefined) response.write(`id: ${id}\n`)
   response.write(`event: ${event}\n`)
   response.write(`data: ${JSON.stringify(payload)}\n\n`)
@@ -1053,6 +1113,10 @@ function writeSse(response: Response, event: string, payload: LiveSessionMessage
 
 function writeSseComment(response: Response, comment: string) {
   response.write(`: ${comment}\n\n`)
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 app.get(
@@ -1097,9 +1161,19 @@ app.get(
   asyncRoute(async (request, response) => {
     const limit = parseListLimit(request.query.limit)
     const startAfter = typeof request.query.startAfter === 'string' ? request.query.startAfter : undefined
-    const { summaries, hasMore, nextStartAfter } = await listSessionSummaries(limit, startAfter)
+    const { summaries, hasMore, nextStartAfter, latestPage, indexTailSeqNum } = await listSessionSummaries(
+      limit,
+      startAfter,
+    )
 
-    response.json({ sessions: summaries, hasMore, nextStartAfter })
+    const payload: ListSessionsResponse = {
+      sessions: summaries,
+      hasMore,
+      nextStartAfter,
+      latestPage,
+      indexTailSeqNum,
+    }
+    response.json(payload)
   }),
 )
 
@@ -1145,6 +1219,7 @@ app.post(
       { useProducer: false },
     )
     void result
+    appendSessionIndexRecordBestEffort(id)
 
     const appendToken = createAppendToken(id)
     response.status(201).json({
@@ -1152,6 +1227,111 @@ app.post(
       appendToken,
       appendTokenExpiresAt: appendToken ? new Date(Date.now() + APPEND_TOKEN_TTL_MS).toISOString() : undefined,
     })
+  }),
+)
+
+app.get(
+  '/api/sessions/index/live',
+  asyncRoute(async (request, response) => {
+    const requestedFromSeqNum = parseSeqNum(request.query.fromSeqNum, 0)
+    const lastEventSeqNum = parseSeqNum(request.get('last-event-id'), -1)
+    let fromSeqNum = Math.max(requestedFromSeqNum, lastEventSeqNum + 1)
+
+    let closed = false
+    let cancelReadSession: ((reason: string) => Promise<unknown>) | null = null
+
+    const heartbeat = setInterval(() => {
+      if (!closed) writeSseComment(response, 'session-index-live')
+    }, 15_000)
+
+    const close = () => {
+      closed = true
+      clearInterval(heartbeat)
+      void cancelReadSession?.('client disconnected').catch(() => undefined)
+      if (!response.writableEnded) response.end()
+    }
+
+    request.socket.setTimeout(0)
+    response.status(200)
+    response.setHeader('Content-Type', 'text/event-stream')
+    response.setHeader('Cache-Control', 'no-cache, no-transform')
+    response.setHeader('Connection', 'keep-alive')
+    response.setHeader('X-Accel-Buffering', 'no')
+    response.flushHeaders()
+
+    request.on('close', close)
+
+    writeSse(response, 'session-index-ready', {
+      type: 'ready',
+      fromSeqNum,
+    })
+
+    try {
+      while (!closed) {
+        try {
+          const stream = await streamHandle(SESSION_INDEX_STREAM)
+          const readSession = await stream.readSession({
+            start: { from: { seqNum: fromSeqNum }, clamp: true },
+            ignoreCommandRecords: true,
+          })
+          cancelReadSession = (reason: string) => readSession.cancel(reason)
+
+          for await (const record of readSession) {
+            if (closed) break
+            fromSeqNum = record.seqNum + 1
+
+            const streamName = parseSessionIndexStreamName(record.body)
+            if (!streamName) continue
+
+            let summary
+            try {
+              summary = await loadSessionSummaryByStreamName(streamName)
+            } catch (error) {
+              if (
+                isS2Status(error, 404) ||
+                isS2Status(error, 409) ||
+                (error instanceof HttpError && (error.status === 404 || error.status === 409))
+              ) {
+                continue
+              }
+              throw error
+            }
+
+            writeSse(
+              response,
+              'session-index-session',
+              {
+                type: 'session',
+                seqNum: record.seqNum,
+                s2Timestamp: record.timestamp.toISOString(),
+                streamName,
+                session: summary,
+              },
+              record.seqNum,
+            )
+          }
+
+          cancelReadSession = null
+          if (!closed) await sleep(500)
+        } catch (error) {
+          cancelReadSession = null
+          if (closed) break
+
+          if (isS2Status(error, 404) || isS2Status(error, 416)) {
+            await sleep(1_000)
+            continue
+          }
+
+          writeSse(response, 'session-index-error', {
+            type: 'error',
+            error: error instanceof Error ? error.message : 'S2 session index tail failed.',
+          })
+          break
+        }
+      }
+    } finally {
+      close()
+    }
   }),
 )
 

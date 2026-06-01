@@ -40,6 +40,14 @@ export interface SessionDetail extends SessionSummary {
   metadataHistory: SessionMetadata[]
 }
 
+export interface ListSessionsResponse {
+  sessions: SessionSummary[]
+  hasMore: boolean
+  nextStartAfter?: string
+  latestPage: boolean
+  indexTailSeqNum: number | null
+}
+
 export type LiveSessionMessage =
   | {
       type: 'ready'
@@ -79,6 +87,23 @@ export type LiveSessionMessage =
   | {
       type: 'error'
       sessionId: string
+      error: string
+    }
+
+export type SessionIndexMessage =
+  | {
+      type: 'ready'
+      fromSeqNum: number
+    }
+  | {
+      type: 'session'
+      seqNum: number
+      s2Timestamp: string
+      streamName: string
+      session: SessionSummary
+    }
+  | {
+      type: 'error'
       error: string
     }
 

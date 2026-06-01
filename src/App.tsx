@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import {
   AlertTriangle,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   Code2,
   Copy,
   Database,
@@ -14,11 +16,19 @@ import {
 } from 'lucide-react'
 import { api } from './api'
 import { ReplayPlayer } from './ReplayPlayer'
-import type { HealthResponse, LiveSessionMessage, SessionDetail, SessionSummary } from './shared/session'
+import type {
+  HealthResponse,
+  ListSessionsResponse,
+  LiveSessionMessage,
+  SessionDetail,
+  SessionIndexMessage,
+  SessionSummary,
+} from './shared/session'
 import './App.css'
 
 type LiveStatus = 'idle' | 'connecting' | 'live' | 'closed' | 'error'
 type ViewMode = 'replay' | 'capture'
+const SESSION_PAGE_LIMIT = 20
 
 const dateFormat = new Intl.DateTimeFormat('en-US', {
   month: 'short',
@@ -152,6 +162,12 @@ function App() {
   const [copied, setCopied] = useState(false)
   const [liveStatus, setLiveStatus] = useState<LiveStatus>('idle')
   const [view, setView] = useState<ViewMode>('replay')
+  const [latestSessionPage, setLatestSessionPage] = useState(true)
+  const [sessionIndexTailSeqNum, setSessionIndexTailSeqNum] = useState<number | null>(null)
+  const [sessionPageIndex, setSessionPageIndex] = useState(0)
+  const [sessionPageCursors, setSessionPageCursors] = useState<Array<string | undefined>>([undefined])
+  const [sessionHasMore, setSessionHasMore] = useState(false)
+  const [nextSessionPageCursor, setNextSessionPageCursor] = useState<string | undefined>()
   const selectedRef = useRef<SessionDetail | null>(null)
 
   const appOrigin = typeof window === 'undefined' ? 'http://localhost:8787' : window.location.origin
@@ -177,21 +193,19 @@ ${initOptions.join(',\n')}
     selectedRef.current = selected
   }, [selected])
 
-  const refreshSessions = useCallback(async () => {
-    setLoadingSessions(true)
-    try {
-      const [{ sessions: nextSessions }, nextHealth] = await Promise.all([
-        api.listSessions(),
-        api.health(),
-      ])
-      setSessions(nextSessions)
-      setHealth(nextHealth)
-      setError(null)
-    } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'Unable to refresh sessions.')
-    } finally {
-      setLoadingSessions(false)
-    }
+  const applySessionList = useCallback((list: ListSessionsResponse, pageIndex: number, startAfter?: string) => {
+    setSessions(list.sessions)
+    setLatestSessionPage(list.latestPage)
+    setSessionIndexTailSeqNum(list.latestPage ? list.indexTailSeqNum : null)
+    setSessionPageIndex(pageIndex)
+    setSessionHasMore(list.hasMore)
+    setNextSessionPageCursor(list.nextStartAfter)
+    setSessionPageCursors((current) => {
+      const next = current.slice(0, pageIndex + 1)
+      next[pageIndex] = startAfter
+      if (list.nextStartAfter) next[pageIndex + 1] = list.nextStartAfter
+      return next
+    })
   }, [])
 
   const loadSession = useCallback(async (id: string) => {
@@ -209,15 +223,62 @@ ${initOptions.join(',\n')}
     }
   }, [])
 
+  const loadSessionsPage = useCallback(
+    async (pageIndex: number, startAfter?: string, options: { selectFirst?: boolean; refreshHealth?: boolean } = {}) => {
+      setLoadingSessions(true)
+      try {
+        const listPromise = api.listSessions({ limit: SESSION_PAGE_LIMIT, startAfter })
+        const [list, nextHealth] = options.refreshHealth
+          ? await Promise.all([listPromise, api.health()])
+          : [await listPromise, null]
+
+        applySessionList(list, pageIndex, startAfter)
+        if (nextHealth) setHealth(nextHealth)
+        if (options.selectFirst && list.sessions[0]) {
+          await loadSession(list.sessions[0].id)
+        }
+        setError(null)
+      } catch (nextError) {
+        setError(nextError instanceof Error ? nextError.message : 'Unable to refresh sessions.')
+      } finally {
+        setLoadingSessions(false)
+      }
+    },
+    [applySessionList, loadSession],
+  )
+
+  const refreshSessions = useCallback(async () => {
+    const startAfter = sessionPageCursors[sessionPageIndex]
+    await loadSessionsPage(sessionPageIndex, startAfter, { refreshHealth: true })
+  }, [loadSessionsPage, sessionPageCursors, sessionPageIndex])
+
+  const loadOlderSessionsPage = useCallback(async () => {
+    if (!sessionHasMore || !nextSessionPageCursor) return
+    await loadSessionsPage(sessionPageIndex + 1, nextSessionPageCursor, { selectFirst: true })
+  }, [loadSessionsPage, nextSessionPageCursor, sessionHasMore, sessionPageIndex])
+
+  const loadNewerSessionsPage = useCallback(async () => {
+    if (sessionPageIndex <= 0) return
+    const nextPageIndex = sessionPageIndex - 1
+    await loadSessionsPage(nextPageIndex, sessionPageCursors[nextPageIndex], { selectFirst: true })
+  }, [loadSessionsPage, sessionPageCursors, sessionPageIndex])
+
+  const resetToLatestSessionsPage = useCallback(async () => {
+    await loadSessionsPage(0, undefined, { selectFirst: true, refreshHealth: true })
+  }, [loadSessionsPage])
+
   useEffect(() => {
     let cancelled = false
 
     async function boot() {
       try {
-        const [nextHealth, list] = await Promise.all([api.health(), api.listSessions()])
+        const [nextHealth, list] = await Promise.all([
+          api.health(),
+          api.listSessions({ limit: SESSION_PAGE_LIMIT }),
+        ])
         if (cancelled) return
         setHealth(nextHealth)
-        setSessions(list.sessions)
+        applySessionList(list, 0, undefined)
         if (list.sessions[0]) {
           await loadSession(list.sessions[0].id)
         }
@@ -233,7 +294,42 @@ ${initOptions.join(',\n')}
     return () => {
       cancelled = true
     }
-  }, [loadSession])
+  }, [applySessionList, loadSession])
+
+  useEffect(() => {
+    if (!latestSessionPage || sessionIndexTailSeqNum === null) return
+
+    const source = new EventSource(api.liveSessionIndexUrl(sessionIndexTailSeqNum))
+
+    const handleMessage = (event: MessageEvent<string>) => {
+      try {
+        const message = JSON.parse(event.data) as SessionIndexMessage
+        if (message.type === 'session') {
+          setSessions((currentSessions) => {
+            const existing = currentSessions.some((session) => session.id === message.session.id)
+            const nextSessions = existing
+              ? currentSessions.map((session) => (session.id === message.session.id ? message.session : session))
+              : [message.session, ...currentSessions]
+
+            return sortSessions(nextSessions)
+          })
+
+          if (!selectedRef.current) {
+            void loadSession(message.session.id)
+          }
+        }
+      } catch {
+        // The session index is only a live-listing hint. Ignore malformed records and keep the snapshot list.
+      }
+    }
+
+    source.addEventListener('session-index-session', handleMessage)
+    source.addEventListener('session-index-error', handleMessage)
+
+    return () => {
+      source.close()
+    }
+  }, [latestSessionPage, loadSession, sessionIndexTailSeqNum])
 
   useEffect(() => {
     if (!selectedId) {
@@ -521,6 +617,42 @@ ${initOptions.join(',\n')}
                   <Database size={18} aria-hidden="true" />
                   <span>No sessions</span>
                 </div>
+              )}
+            </div>
+            <div className="session-pagination">
+              <div className="pagination-row">
+                <button
+                  type="button"
+                  className="ghost-button pagination-button"
+                  onClick={() => void loadNewerSessionsPage()}
+                  disabled={loadingSessions || sessionPageIndex === 0}
+                >
+                  <ChevronLeft size={16} aria-hidden="true" />
+                  Newer
+                </button>
+                <span className="pagination-status">
+                  Page {sessionPageIndex + 1}
+                  {latestSessionPage ? ' · live' : ''}
+                </span>
+                <button
+                  type="button"
+                  className="ghost-button pagination-button"
+                  onClick={() => void loadOlderSessionsPage()}
+                  disabled={loadingSessions || !sessionHasMore || !nextSessionPageCursor}
+                >
+                  Load older
+                  <ChevronRight size={16} aria-hidden="true" />
+                </button>
+              </div>
+              {sessionPageIndex > 0 && (
+                <button
+                  type="button"
+                  className="ghost-button pagination-reset"
+                  onClick={() => void resetToLatestSessionsPage()}
+                  disabled={loadingSessions}
+                >
+                  Latest page
+                </button>
               )}
             </div>
           </aside>
