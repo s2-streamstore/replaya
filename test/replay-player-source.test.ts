@@ -8,5 +8,6 @@ describe('ReplayPlayer active-session playback integration', () => {
     expect(source).toContain('liveMode: false')
     expect(source).not.toContain('startLive(')
     expect(source).toContain('queueLiveEdgeSeek(events)')
+    expect(source).toContain('if (live && !followingLiveEdgeRef.current) return')
   })
 })
