@@ -51,6 +51,64 @@ integration('S2 integration (s2 lite): create → append → replay', () => {
     return response.json()
   }
 
+  const postEvents = (id: string, events: ReplayEvent[], eventCount: number) =>
+    json(`/api/sessions/${id}/events`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ events, eventCount }),
+    })
+
+  // Consume an SSE stream, invoking onMessage(eventName, data) per frame.
+  // Returns an abort handle once the response headers are in.
+  const openSse = async (
+    path: string,
+    onMessage: (event: string, data: unknown) => void,
+  ): Promise<{ close: () => void }> => {
+    const controller = new AbortController()
+    const response = await fetch(`${base}${path}`, {
+      headers: { accept: 'text/event-stream' },
+      signal: controller.signal,
+    })
+    if (!response.ok || !response.body) throw new Error(`live stream failed: ${response.status}`)
+
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    void (async () => {
+      let buffer = ''
+      try {
+        for (;;) {
+          const { done, value } = await reader.read()
+          if (done) break
+          buffer += decoder.decode(value, { stream: true })
+          let split
+          while ((split = buffer.indexOf('\n\n')) !== -1) {
+            const frame = buffer.slice(0, split)
+            buffer = buffer.slice(split + 2)
+            let eventName = 'message'
+            const dataLines: string[] = []
+            for (const line of frame.split('\n')) {
+              if (line.startsWith('event:')) eventName = line.slice(6).trim()
+              else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim())
+            }
+            if (dataLines.length > 0) {
+              let data: unknown = null
+              try {
+                data = JSON.parse(dataLines.join('\n'))
+              } catch {
+                data = null
+              }
+              onMessage(eventName, data)
+            }
+          }
+        }
+      } catch {
+        // aborted / stream closed
+      }
+    })()
+
+    return { close: () => controller.abort() }
+  }
+
   it('reaches S2 and reports healthy', async () => {
     const health = await json('/api/health')
     expect(health.ok).toBe(true)
@@ -98,6 +156,59 @@ integration('S2 integration (s2 lite): create → append → replay', () => {
     // And the session shows up in the listing.
     const list = (await json('/api/sessions?limit=20')) as ListSessionsResponse
     expect(list.sessions.some((summary) => summary.id === session.id)).toBe(true)
+  })
+
+  it('streams newly appended events to a live tail (SSE)', async () => {
+    const { session } = (await json('/api/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: 'Live tail', source: 'integration' }),
+    })) as { session: SessionDetail }
+
+    // Seed so the stream exists, then start tailing.
+    const t = 1_700_000_500_000
+    await postEvents(
+      session.id,
+      [
+        { type: 4, timestamp: t, data: { href: 'https://example.test/live' } },
+        { type: 2, timestamp: t + 1, data: { node: {}, initialOffset: { top: 0, left: 0 } } },
+      ],
+      2,
+    )
+
+    let ready = false
+    let resolveTarget: (value: { event?: { data?: { x?: number } } }) => void = () => {}
+    const targetSeen = new Promise<{ event?: { data?: { x?: number } } }>((resolve) => {
+      resolveTarget = resolve
+    })
+
+    const stream = await openSse(`/api/sessions/${session.id}/live?fromSeqNum=0`, (event, data) => {
+      if (event === 'session-ready') ready = true
+      if (event === 'session-event') {
+        const payload = data as { event?: { data?: { x?: number } } }
+        if (payload?.event?.data?.x === 999) resolveTarget(payload)
+      }
+    })
+
+    try {
+      // Wait for the stream to establish.
+      const start = Date.now()
+      while (!ready && Date.now() - start < 5000) await new Promise((resolve) => setTimeout(resolve, 50))
+      expect(ready).toBe(true)
+
+      // Append a distinguishable event while the tail is open — it must stream through.
+      await postEvents(session.id, [{ type: 3, timestamp: t + 2, data: { source: 2, type: 2, id: 9, x: 999, y: 111 } }], 3)
+
+      const target = await Promise.race([
+        targetSeen,
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('timed out waiting for live event')), 10_000),
+        ),
+      ])
+      expect(target.event?.data?.x).toBe(999)
+    } finally {
+      stream.close()
+    }
   })
 
   it('deletes a session from S2', async () => {
