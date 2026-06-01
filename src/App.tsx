@@ -683,22 +683,22 @@ ${initOptions.join(',\n')}
     setDeletingSession(true)
     try {
       await api.deleteSession(id)
-      const remaining = sessions.filter((session) => session.id !== id)
-      setSessions(remaining)
       setConfirmingDelete(false)
-      setSelected(null)
-      setLiveStatus('idle')
       setSeekedEntryId(null)
       setError(null)
-      if (remaining[0]) {
-        await loadSession(remaining[0].id)
-      }
+      // Instant feedback: drop it from the list and clear the player…
+      setSessions((current) => current.filter((session) => session.id !== id))
+      setSelected(null)
+      setLiveStatus('idle')
+      // …then reconcile with the server so the list reflects authoritative truth
+      // (refills the page, re-selects the new first session) regardless of client state.
+      await loadSessionsPage(sessionPageIndex, sessionPageCursors[sessionPageIndex], { selectFirst: true })
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : 'Unable to delete session.')
     } finally {
       setDeletingSession(false)
     }
-  }, [selected, sessions, loadSession])
+  }, [selected, sessionPageIndex, sessionPageCursors, loadSessionsPage])
 
   const activity = useMemo(() => (selected ? buildActivity(selected.events) : []), [selected])
 
