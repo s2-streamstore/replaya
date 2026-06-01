@@ -1,22 +1,24 @@
 # syntax=docker/dockerfile:1
 
-# ---- build ----
-FROM node:24-slim AS build
+FROM node:24-slim AS pnpm-base
 WORKDIR /app
+RUN corepack enable && corepack prepare pnpm@10.34.1 --activate
+
+# ---- build ----
+FROM pnpm-base AS build
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-RUN corepack enable && pnpm install --frozen-lockfile
+RUN pnpm install --frozen-lockfile
 COPY . .
 RUN pnpm build
 
 # ---- runtime ----
-FROM node:24-slim AS runtime
+FROM pnpm-base AS runtime
 ENV NODE_ENV=production
-WORKDIR /app
 
 # Production deps only. rrweb stays (it's a runtime dependency: the server
 # serves /vendor/rrweb.min.js from node_modules).
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-RUN corepack enable && pnpm install --prod --frozen-lockfile && pnpm store prune
+RUN pnpm install --prod --frozen-lockfile && pnpm store prune
 
 # Compiled server + built client assets.
 COPY --from=build /app/dist-server ./dist-server
