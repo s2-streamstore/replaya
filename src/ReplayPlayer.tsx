@@ -127,6 +127,21 @@ export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(fu
     return nextEvents.length
   }, [])
 
+  const continueBufferedPlayback = useCallback(
+    (player: DestroyablePlayer, sourceEvents: ReplayEvent[] = eventsRef.current) => {
+      const resumeOffset = timelineEndOffset(sourceEvents, lastAddedSeqNumRef.current)
+      const appendedCount = appendNewEventsToPlayer(player, sourceEvents)
+
+      if (appendedCount === 0 || resumeOffset === null) return false
+
+      setFollowingLiveEdgeState(false)
+      player.goto(resumeOffset, true)
+      setPlayerState('playing')
+      return true
+    },
+    [appendNewEventsToPlayer, setFollowingLiveEdgeState],
+  )
+
   const queueLiveEdgeSeek = useCallback(
     (sourceEvents: ReplayEvent[]) => {
       clearLiveEdgeSeekTimer()
@@ -202,7 +217,14 @@ export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(fu
     if (!frame || !canMount) return
 
     const handleControllerClick = (event: MouseEvent) => {
-      if (event.target instanceof Element && event.target.closest('.rr-progress')) {
+      const progress = event.target instanceof Element ? event.target.closest('.rr-progress') : null
+      if (!(progress instanceof HTMLElement)) return
+
+      const rect = progress.getBoundingClientRect()
+      const ratio = rect.width > 0 ? (event.clientX - rect.left) / rect.width : 0
+      if (live && ratio >= LIVE_EDGE_PROGRESS) {
+        followLiveEdge()
+      } else {
         leaveLiveEdge()
       }
     }
@@ -210,7 +232,7 @@ export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(fu
     frame.addEventListener('click', handleControllerClick, true)
 
     return () => frame.removeEventListener('click', handleControllerClick, true)
-  }, [canMount, leaveLiveEdge, sessionId])
+  }, [canMount, followLiveEdge, leaveLiveEdge, live, sessionId])
 
   useEffect(() => {
     const frame = frameRef.current
@@ -250,6 +272,7 @@ export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(fu
         const player = new RrwebPlayer(options) as DestroyablePlayer
         const handleFinish = () => {
           if (live) {
+            if (!followingLiveEdgeRef.current && continueBufferedPlayback(player)) return
             followLiveEdge()
             setPlayerState('waiting')
           } else {
@@ -262,8 +285,6 @@ export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(fu
           if (typeof value === 'number') {
             if (!live) {
               setFollowingLiveEdgeState(value >= LIVE_EDGE_PROGRESS)
-            } else if (!followingLiveEdgeRef.current && value >= LIVE_EDGE_PROGRESS) {
-              followLiveEdge()
             }
           }
         })
@@ -321,6 +342,7 @@ export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(fu
   }, [
     canMount,
     clearLiveEdgeSeekTimer,
+    continueBufferedPlayback,
     followLiveEdge,
     live,
     seekPlayerToLiveEdge,
