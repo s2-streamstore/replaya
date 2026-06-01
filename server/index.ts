@@ -3,6 +3,7 @@ import express, {
   type ErrorRequestHandler,
   type NextFunction,
   type Request,
+  type RequestHandler,
   type Response,
 } from 'express'
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto'
@@ -73,6 +74,8 @@ const SESSION_CREATE_RATE_LIMIT = Number(process.env.REPLAYA_SESSION_CREATE_RATE
 const SESSION_APPEND_RATE_LIMIT = Number(process.env.REPLAYA_SESSION_APPEND_RATE_LIMIT ?? 600)
 const RATE_LIMIT_WINDOW_MS = Number(process.env.REPLAYA_RATE_LIMIT_WINDOW_MS ?? 60_000)
 const MAX_EVENTS_PER_BATCH = Number(process.env.REPLAYA_MAX_EVENTS_PER_BATCH ?? 100)
+const LOG_REQUESTS = parseBooleanEnv(process.env.REPLAYA_LOG_REQUESTS, !IS_PRODUCTION)
+const SHUTDOWN_GRACE_MS = Number(process.env.REPLAYA_SHUTDOWN_GRACE_MS ?? 10_000)
 const SESSION_ID_PATTERN = /^session-[a-z0-9-]+$/
 const ACTIVE_FENCE_TOKEN = 'active'
 const STOPPED_FENCE_TOKEN = 'stopped'
@@ -312,9 +315,20 @@ function requireAppendToken(request: Request, sessionId: string, body: unknown) 
   }
 }
 
+const requestLogger: RequestHandler = (request, response, next) => {
+  const startedAt = Date.now()
+  response.on('finish', () => {
+    if (response.statusCode >= 400 || LOG_REQUESTS) {
+      console.log(`[replaya] ${request.method} ${request.originalUrl} ${response.statusCode} ${Date.now() - startedAt}ms`)
+    }
+  })
+  next()
+}
+
 const app = express()
 app.disable('x-powered-by')
 if (TRUST_PROXY) app.set('trust proxy', true)
+app.use(requestLogger)
 app.use(securityHeaders)
 app.use(corsMiddleware)
 app.use(express.json({ limit: JSON_BODY_LIMIT }))
@@ -1713,6 +1727,43 @@ function assertStartupConfig() {
 
 assertStartupConfig()
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`RePlaya API listening on http://localhost:${PORT}`)
 })
+
+const openSockets = new Set<import('node:net').Socket>()
+server.on('connection', (socket) => {
+  openSockets.add(socket)
+  socket.on('close', () => openSockets.delete(socket))
+})
+
+let shuttingDown = false
+function shutdown(signal: string) {
+  if (shuttingDown) return
+  shuttingDown = true
+  console.log(`[replaya] ${signal} received — shutting down (grace ${SHUTDOWN_GRACE_MS}ms).`)
+
+  server.close((error) => {
+    if (error) {
+      console.error('[replaya] error while closing server', error)
+      process.exit(1)
+    }
+    console.log('[replaya] closed cleanly.')
+    process.exit(0)
+  })
+
+  // Let in-flight requests drain briefly, then drop lingering sockets
+  // (live-tail SSE streams never end on their own) so server.close() can finish.
+  setTimeout(() => {
+    for (const socket of openSockets) socket.destroy()
+  }, Math.min(3_000, SHUTDOWN_GRACE_MS)).unref()
+
+  // Hard cap so a stuck close can't wedge the process.
+  setTimeout(() => {
+    console.error('[replaya] forced exit after shutdown grace period.')
+    process.exit(1)
+  }, SHUTDOWN_GRACE_MS).unref()
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'))
+process.on('SIGINT', () => shutdown('SIGINT'))

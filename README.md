@@ -127,6 +127,28 @@ Useful security limits:
 - `REPLAYA_JSON_BODY_LIMIT` default `8mb`.
 - `REPLAYA_APPEND_TOKEN_TTL_MS` default `86400000`.
 
+Operational knobs:
+
+- `REPLAYA_LOG_REQUESTS` — access log for every request. Defaults on in development, off in production (where high-volume ingest would flood logs); failed requests (4xx/5xx) are always logged.
+- `REPLAYA_SHUTDOWN_GRACE_MS` default `10000`. On `SIGTERM`/`SIGINT` the server stops accepting connections and drains in-flight requests; lingering live-tail streams are dropped after ~3s so it can exit cleanly, with a hard exit at the grace deadline.
+
+### Docker
+
+```bash
+docker build -t replaya .
+docker run --rm -p 8787:8787 \
+  -e NODE_ENV=production \
+  -e S2_ACCESS_TOKEN=... -e S2_BASIN=... \
+  -e REPLAYA_PROJECT_KEY=pk_live_... \
+  -e REPLAYA_APPEND_TOKEN_SECRET="$(openssl rand -hex 32)" \
+  -e REPLAYA_ALLOWED_CAPTURE_ORIGINS=https://app.example.com \
+  replaya
+```
+
+The image runs the single compiled server (`node dist-server/server/index.js`) as a non-root user and includes a `HEALTHCHECK` against `/api/health`. Remember the access-boundary checklist above: only the collector and recorder routes should be publicly reachable.
+
+> Pass secrets with `-e VAR=value` (or a secrets manager), not by reusing a local `.env`. `docker --env-file` does not strip surrounding quotes the way `dotenv` does, so a quoted value like `S2_ACCESS_TOKEN="..."` would be sent to the container with the quotes included.
+
 By default, the SDK uses S2 Cloud. To target s2-lite or another compatible deployment, set the account and basin endpoints explicitly:
 
 ```bash
