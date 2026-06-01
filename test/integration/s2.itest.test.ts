@@ -1,7 +1,11 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { AddressInfo } from 'node:net'
 import type { Server } from 'node:http'
 import type { SessionDetail, ListSessionsResponse, ReplayEvent } from '../../src/shared/session.ts'
+
+// These tests round-trip through Express into s2-lite; give them generous
+// timeouts so a slow Docker host produces a real failure, not a 5s timeout.
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 })
 
 // Integration test against a real S2 API surface, intended to run against
 // `s2 lite` (the in-memory emulator):
@@ -39,7 +43,20 @@ integration('S2 integration (s2 lite): create → append → replay', () => {
     })
   })
 
-  afterAll(() => {
+  afterAll(async () => {
+    // Best-effort cleanup so a long-lived local s2-lite doesn't accumulate sessions.
+    if (base) {
+      try {
+        const list = (await (await fetch(`${base}/api/sessions?limit=100`)).json()) as ListSessionsResponse
+        await Promise.all(
+          list.sessions.map((summary) =>
+            fetch(`${base}/api/sessions/${summary.id}`, { method: 'DELETE' }).catch(() => undefined),
+          ),
+        )
+      } catch {
+        // ignore — the emulator is ephemeral in CI
+      }
+    }
     server?.close()
   })
 
