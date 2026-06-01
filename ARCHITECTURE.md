@@ -37,7 +37,7 @@ The browser **never receives the S2 token**. The recorder talks only to RePlaya'
 
 ## Newest-first listing without a database
 
-S2 lists streams in **lexicographic ascending** order. RePlaya exploits this to get a newest-first index for free: stream names embed `REVERSE_TIME_MAX_MS - createdAtMs`, zero-padded and split into path segments. Because a newer session has a smaller inverted key, `streams.list({ prefix: "sessions/" })` returns the newest sessions first — no separate index stream or database keeping an ordering in sync.
+S2 lists streams in **lexicographic ascending** order. RePlaya exploits this to get a newest-first index for free: stream names embed `REVERSE_TIME_MAX_MS - createdAtMs`, zero-padded and split into path segments. Because a newer session has a smaller inverted key, `streams.list({ prefix: "sessions/" })` returns the newest sessions first — no separate ordering index or database needed to keep that in sync. (The [sidecar index stream](#the-sidecar-index-stream--live-list-updates) below is for *live discovery* of new sessions, not for ordering — the namespace already handles order.)
 
 Dashboard listing does **not** read full replay streams. It:
 
