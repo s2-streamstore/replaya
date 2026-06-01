@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react'
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react'
 import 'rrweb-player/dist/style.css'
 import type { eventWithTime } from '@rrweb/types'
 import type RrwebPlayerInstance from 'rrweb-player'
@@ -68,6 +68,7 @@ export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(fu
   const mountedSessionRef = useRef<string | null>(null)
   const lastAddedSeqNumRef = useRef(-1)
   const followingLiveEdgeRef = useRef(true)
+  const liveEdgeSeekTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null)
   const eventsRef = useRef(events)
   const [size, setSize] = useState({ width: 960, height: 540 })
   const [playerError, setPlayerError] = useState<string | null>(null)
@@ -99,6 +100,35 @@ export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(fu
     followingLiveEdgeRef.current = nextFollowingLiveEdge
     setFollowingLiveEdge((current) => (current === nextFollowingLiveEdge ? current : nextFollowingLiveEdge))
   }
+
+  const clearLiveEdgeSeekTimer = useCallback(() => {
+    if (liveEdgeSeekTimerRef.current === null) return
+    window.clearTimeout(liveEdgeSeekTimerRef.current)
+    liveEdgeSeekTimerRef.current = null
+  }, [])
+
+  const seekPlayerToLiveEdge = useCallback((player: DestroyablePlayer, sourceEvents: ReplayEvent[] = eventsRef.current) => {
+    const edgeOffset = timelineEndOffset(sourceEvents, lastAddedSeqNumRef.current)
+    if (edgeOffset !== null) {
+      player.goto(edgeOffset, false)
+    }
+  }, [])
+
+  const queueLiveEdgeSeek = useCallback(
+    (sourceEvents: ReplayEvent[]) => {
+      clearLiveEdgeSeekTimer()
+      const scheduledSessionId = sessionId
+      liveEdgeSeekTimerRef.current = window.setTimeout(() => {
+        liveEdgeSeekTimerRef.current = null
+        const player = playerRef.current
+        if (!player || mountedSessionRef.current !== scheduledSessionId || !followingLiveEdgeRef.current) return
+
+        seekPlayerToLiveEdge(player, sourceEvents)
+        setPlayerState('waiting')
+      }, 0)
+    },
+    [clearLiveEdgeSeekTimer, seekPlayerToLiveEdge, sessionId],
+  )
 
   useImperativeHandle(
     ref,
@@ -179,7 +209,7 @@ export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(fu
             height: size.height,
             autoPlay: false,
             showController: true,
-            liveMode: live,
+            liveMode: false,
             speed: 1,
             speedOption: [1, 2, 4],
             maxScale: 1,
@@ -192,7 +222,7 @@ export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(fu
         const handleFinish = () => {
           if (live) {
             updateFollowingLiveEdge(true)
-            player.getReplayer().startLive(Date.now())
+            seekPlayerToLiveEdge(player)
             setPlayerState('waiting')
           } else {
             setPlayerState('paused')
@@ -233,11 +263,7 @@ export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(fu
         setPlayerError(null)
 
         if (live) {
-          const edgeOffset = timelineEndOffset(currentEvents, lastAddedSeqNumRef.current)
-          if (edgeOffset !== null) {
-            player.goto(edgeOffset, false)
-          }
-          player.getReplayer().startLive(Date.now())
+          seekPlayerToLiveEdge(player, currentEvents)
           setPlayerState('waiting')
         } else {
           const endOffset = timelineEndOffset(currentEvents, lastAddedSeqNumRef.current)
@@ -257,13 +283,14 @@ export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(fu
 
     return () => {
       cancelled = true
+      clearLiveEdgeSeekTimer()
       playerRef.current?.$destroy()
       playerRef.current = null
       mountedSessionRef.current = null
       lastAddedSeqNumRef.current = -1
       setPlayerState('loading')
     }
-  }, [canMount, live, sessionId, size.height, size.width])
+  }, [canMount, clearLiveEdgeSeekTimer, live, seekPlayerToLiveEdge, sessionId, size.height, size.width])
 
   useEffect(() => {
     const player = playerRef.current
@@ -281,9 +308,9 @@ export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(fu
     }
 
     if (nextEvents.length > 0 && wasFollowingLiveEdge) {
-      setPlayerState('waiting')
+      queueLiveEdgeSeek(events)
     }
-  }, [events, live, sessionId])
+  }, [events, live, queueLiveEdgeSeek, sessionId])
 
   if (events.length < 2) {
     return (
