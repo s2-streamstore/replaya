@@ -74,7 +74,6 @@ integration('S2 integration (s2 lite): create → append → replay', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ events, eventCount }),
     })
-  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
   // Consume an SSE stream, invoking onMessage(eventName, data) per frame.
   // Returns an abort handle once the response headers are in.
@@ -236,7 +235,6 @@ integration('S2 integration (s2 lite): create → append → replay', () => {
       body: JSON.stringify({ title: 'Large snapshot', source: 'integration' }),
     })) as { session: SessionDetail }
 
-    await sleep(50)
     const t = Date.now() - 10
     const largeText = 'x'.repeat(1_200_000)
     const events: ReplayEvent[] = [

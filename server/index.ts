@@ -78,6 +78,8 @@ const RATE_LIMIT_WINDOW_MS = Number(process.env.REPLAYA_RATE_LIMIT_WINDOW_MS ?? 
 const MAX_EVENTS_PER_BATCH = Number(process.env.REPLAYA_MAX_EVENTS_PER_BATCH ?? 100)
 const LOG_REQUESTS = parseBooleanEnv(process.env.REPLAYA_LOG_REQUESTS, !IS_PRODUCTION)
 const SHUTDOWN_GRACE_MS = Number(process.env.REPLAYA_SHUTDOWN_GRACE_MS ?? 10_000)
+const EVENT_CHUNK_GROUP_TTL_MS = Number(process.env.REPLAYA_EVENT_CHUNK_GROUP_TTL_MS ?? 60_000)
+const MAX_PENDING_CHUNK_GROUPS = Number(process.env.REPLAYA_MAX_PENDING_CHUNK_GROUPS ?? 64)
 const SESSION_ID_PATTERN = /^session-[a-z0-9-]+$/
 const ACTIVE_FENCE_TOKEN = 'active'
 const STOPPED_FENCE_TOKEN = 'stopped'
@@ -705,6 +707,7 @@ function storedRecordsForEvent(
 interface ChunkAssemblyGroup {
   chunkCount: number
   chunks: Map<number, StoredReadRecord & { envelope: Extract<StoredSessionRecord, { kind: 'event-chunk' }> }>
+  updatedAtMs: number
 }
 
 function assembleChunkGroup(
@@ -746,8 +749,25 @@ function assembleChunkGroup(
 function createChunkAssembler() {
   const groups = new Map<string, ChunkAssemblyGroup>()
 
+  const pruneGroups = (nowMs: number) => {
+    for (const [chunkId, group] of groups) {
+      if (nowMs - group.updatedAtMs > EVENT_CHUNK_GROUP_TTL_MS) {
+        groups.delete(chunkId)
+      }
+    }
+
+    while (groups.size > MAX_PENDING_CHUNK_GROUPS) {
+      const oldestChunkId = groups.keys().next().value
+      if (oldestChunkId === undefined) break
+      groups.delete(oldestChunkId)
+    }
+  }
+
   return {
     push(record: StoredReadRecord) {
+      const nowMs = Date.now()
+      pruneGroups(nowMs)
+
       if (!isEventChunkReadRecord(record)) return record
 
       const { chunkId, chunkIndex, chunkCount } = record.envelope
@@ -764,16 +784,21 @@ function createChunkAssembler() {
       const existing = groups.get(chunkId)
       if (!existing && chunkIndex !== 0) return null
 
-      const group: ChunkAssemblyGroup = existing ?? { chunkCount, chunks: new Map() }
+      const group: ChunkAssemblyGroup = existing ?? { chunkCount, chunks: new Map(), updatedAtMs: nowMs }
       if (group.chunkCount !== chunkCount || group.chunks.has(chunkIndex)) {
         groups.delete(chunkId)
         return null
       }
 
       group.chunks.set(chunkIndex, record)
+      group.updatedAtMs = nowMs
+      groups.delete(chunkId)
       groups.set(chunkId, group)
 
-      if (group.chunks.size < chunkCount) return null
+      if (group.chunks.size < chunkCount) {
+        pruneGroups(nowMs)
+        return null
+      }
 
       groups.delete(chunkId)
       return assembleChunkGroup(group, record)
@@ -1780,6 +1805,11 @@ app.post(
     } catch (error) {
       if (!(error instanceof FencingTokenMismatchError)) throw error
       result = { appended: 0, tailSeqNum: null }
+    }
+
+    // appendStoredRecords reports physical S2 records; expose logical rrweb events only after all records land.
+    if (result.appended !== 0 && result.appended !== records.length) {
+      throw new HttpError(502, 'Partial event append failed.')
     }
 
     response.json({ ...result, appended: result.appended === 0 ? 0 : events.length })
