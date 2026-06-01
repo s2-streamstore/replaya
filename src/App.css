@@ -608,6 +608,7 @@
 .pagination-button,
 .pagination-reset {
   min-width: 0;
+  white-space: nowrap;
 }
 
 .pagination-button:last-child {

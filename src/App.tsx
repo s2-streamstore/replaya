@@ -696,7 +696,7 @@ ${initOptions.join(',\n')}
                   onClick={() => void loadOlderSessionsPage()}
                   disabled={loadingSessions || !sessionHasMore || !nextSessionPageCursor}
                 >
-                  Load older
+                  Older
                   <ChevronRight size={16} aria-hidden="true" />
                 </button>
               </div>
