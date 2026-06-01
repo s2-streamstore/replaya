@@ -20,7 +20,7 @@ A session recording is a log: an append-only, ordered, timestamped sequence of e
 - **Live tail.** `GET /api/sessions/:id/live` opens an S2 read session from the snapshot tail and bridges new records to the browser over SSE, where they're appended to the mounted player. The same stream serves both the historical scrub and the live edge.
 - **Concurrency.** Stream creation and stop write `active` / `stopped` fencing tokens; event and heartbeat appends are fenced on `active`, so a finished session can't be resurrected by a late writer.
 
-Streams are created on first append (`createStreamOnAppend`), inheriting the basin's default config, so there's no stream provisioning to manage. That leaves one external dependency: point RePlaya at S2 Cloud, or at a self-hosted [s2-lite](https://github.com/s2-streamstore/s2) to keep everything in your own infrastructure. Recordings live in your own basin — URI-addressable, with configurable retention and on-demand deletion. The browser never receives the S2 token; all S2 reads and writes go through the RePlaya server.
+Streams are created on first append (`createStreamOnAppend`), inheriting the basin's default config, so there's no stream provisioning to manage. That leaves one external dependency: point RePlaya at [S2 Cloud](https://s2.dev/), or at a self-hosted [s2-lite](https://github.com/s2-streamstore/s2#s2-lite) to keep everything in your own infrastructure. Recordings live in your own basin — URI-addressable, with configurable retention and on-demand deletion. The browser never receives the S2 token; all S2 reads and writes go through the RePlaya server.
 
 For comparison with a typical session-replay backend:
 
@@ -36,8 +36,8 @@ Dashboard search is a client-side filter over the sessions already listed — S2
 ## Quickstart
 
 ```bash
-npm install
-npm run dev
+pnpm install
+pnpm dev
 ```
 
 The API runs on `http://localhost:8787` and Vite serves the app on `http://localhost:5173`.
@@ -45,8 +45,8 @@ The API runs on `http://localhost:8787` and Vite serves the app on `http://local
 For a production-style local run, build and serve everything from Express on one port:
 
 ```bash
-npm run build
-npm start
+pnpm build
+pnpm start
 # open http://localhost:8787
 ```
 
@@ -59,7 +59,7 @@ S2_STREAM_PREFIX=sessions/
 PORT=8787
 ```
 
-The basin is created on first use with RePlaya's stream defaults. The dashboard's health pill reports the basin and the effective S2 endpoints so you can confirm what you're pointed at. To use s2-lite or another compatible deployment instead of S2 Cloud, set the endpoints explicitly:
+The basin is created on first use with RePlaya's stream defaults. The dashboard's health pill reports the basin and the effective S2 endpoints so you can confirm what you're pointed at. To use [s2-lite](https://github.com/s2-streamstore/s2#s2-lite) or another compatible deployment instead of S2 Cloud, set the endpoints explicitly:
 
 ```bash
 S2_ACCOUNT_ENDPOINT=http://localhost:7070
@@ -146,22 +146,22 @@ The image runs the single compiled server (`node dist-server/server/index.js`) a
 
 ## Scripts
 
-- `npm run dev` starts the API and Vite.
-- `npm run build` type-checks the client/server and builds the frontend.
-- `npm run lint` runs ESLint.
-- `npm test` runs the unit/smoke suite (recorder invariants + HTTP smoke). No S2 required.
-- `npm run test:integration` runs the S2 round-trip tests against a real S2 API.
-- `npm start` serves the built frontend and API from Express.
+- `pnpm dev` starts the API and Vite.
+- `pnpm build` type-checks the client/server and builds the frontend.
+- `pnpm lint` runs ESLint.
+- `pnpm test` runs the unit/smoke suite (recorder invariants + HTTP smoke). No S2 required.
+- `pnpm test:integration` runs the S2 round-trip tests against a real S2 API.
+- `pnpm start` serves the built frontend and API from Express.
 
 ## Testing
 
-`npm test` covers recorder invariants and an HTTP smoke of the server (recorder delivery, security headers, ingest-auth rejection) without needing S2.
+`pnpm test` covers recorder invariants and an HTTP smoke of the server (recorder delivery, security headers, ingest-auth rejection) without needing S2.
 
-The integration tests exercise the real create → append → replay → delete path against [`s2 lite`](https://github.com/s2-streamstore/s2), the in-memory S2 emulator. They're skipped unless `S2_TEST_ENDPOINT` is set:
+The integration tests exercise the real create → append → replay → delete path against [`s2 lite`](https://github.com/s2-streamstore/s2#s2-lite), the in-memory S2 emulator. They're skipped unless `S2_TEST_ENDPOINT` is set:
 
 ```bash
 docker run -d -p 8080:80 ghcr.io/s2-streamstore/s2 lite
-S2_TEST_ENDPOINT=http://localhost:8080 npm run test:integration
+S2_TEST_ENDPOINT=http://localhost:8080 pnpm test:integration
 ```
 
 CI runs both: a build/lint/unit-test job (Node 20 + 24) and an integration job that boots `s2 lite` and runs the round-trip suite.

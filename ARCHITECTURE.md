@@ -1,6 +1,8 @@
 # RePlaya Architecture
 
-RePlaya's backend is a single primitive: a durable, ordered [S2](https://s2.dev/) stream. There is no message bus, relational database, analytics store, cache, object store, or search index. Everything below follows from one idea — **a session recording is a log** — and from S2 exposing logs as a first-class, URI-addressable service.
+RePlaya's backend is a single primitive: a durable, ordered S2 stream. There is no message bus, relational database, analytics store, cache, object store, or search index. Everything below follows from one idea — **a session recording is a log** — and from S2 exposing logs as a first-class, URI-addressable service.
+
+The same architecture works against [S2 Cloud](https://s2.dev/) or [s2-lite](https://github.com/s2-streamstore/s2#s2-lite), the self-hostable server implementation in the `s2-streamstore/s2` repo. RePlaya only depends on S2-compatible account and basin endpoints, so the stream model below is the same in both deployments.
 
 This document is the deep version of [the README's "How it works on S2"](README.md#how-it-works-on-s2).
 
