@@ -1,11 +1,11 @@
 # RePlaya
 
-Self-hosted session replay built on [S2](https://s2.dev/). Each session is stored as one S2 stream, and that stream is the whole backend — there's no separate database, message queue, object store, or search index. Because an S2 stream can be tailed as it's written, RePlaya can replay a session live, while the visitor is still on the page, as well as play back finished ones. Add the recorder snippet to your site and sessions land in streams you can replay, live-tail, search, and export.
+Self-hosted session replay built on [S2](https://s2.dev/). Each session is stored as one S2 stream, and that stream is the whole backend — there's no separate database, message bus, object store, or search index. Because an S2 stream can be tailed as it's written, RePlaya can replay a session live, while the visitor is still on the page, as well as play back finished ones. Add the recorder snippet to your site and sessions are stored as streams you can replay, live-tail, filter, and export.
 
 ## Demo
 
 <p align="center">
-  <img src="docs/demo.gif" alt="RePlaya dashboard: a new session goes active and replays in real time as the user clicks through their app" width="900">
+  <img src="docs/demo.gif" alt="RePlaya dashboard: a new session goes active and is live-tailed as the visitor uses the app" width="900">
 </p>
 
 <p align="center"><em>A new session appears in the list and is live-tailed from its S2 stream — the replay and activity feed update as the visitor uses the app. (<a href="docs/demo.mp4">MP4</a>)</em></p>

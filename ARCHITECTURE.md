@@ -14,16 +14,16 @@ So the stream settings live in the **basin's `defaultStreamConfig`**, not in a p
 - `deleteOnEmpty.minAgeSecs: 86400` (24h)
 - `retentionPolicy.ageSecs: 2419200` (28d)
 
-(One consequence of using basin defaults: the sidecar [index stream](#the-sidecar-index-stream--live-list-updates) inherits the same config. If you ever wanted, say, different retention for the index, *that* would be the reason to create it explicitly with its own per-stream config — but as a single dedicated basin, uniform defaults are exactly what you want.)
+(One consequence of using basin defaults: the sidecar [index stream](#the-sidecar-index-stream--live-list-updates) inherits the same config. If you ever wanted, say, different retention for the index, *that* would be the reason to create it explicitly with its own per-stream config — but for a single dedicated basin, uniform defaults are sufficient.)
 
-Each replay is stored under a reverse-time stream name such as `sessions/8235/832/123/456/session-mpsphcyj-ffccffdbc1`. The path segments encode an *inverted* creation timestamp (see [Newest-first listing](#newest-first-listing-without-a-database)). Streams that go empty are reaped after 24h; recordings are retained for 28d. Both are S2 stream policies, not cron jobs RePlaya runs.
+Each replay is stored under a reverse-time stream name such as `sessions/8219/832/978/212/session-mpsphcyj-ffccffdbc1`. The path segments encode an *inverted* creation timestamp (see [Newest-first listing](#newest-first-listing-without-a-database)). Streams that go empty are reaped after 24h; recordings are retained for 28d. Both are S2 stream policies, not cron jobs RePlaya runs.
 
 ## Timestamping & the replay timeline
 
 Because the stream config is `client-require`, **every appended record is timestamped by the client**. RePlaya uses that field as semantic data, not just metadata:
 
 - **Event records** carry the rrweb capture timestamp.
-- **Create, stop, and heartbeat records** carry server wall-clock time, so S2 tail reads report durable liveness.
+- **Create, stop, and heartbeat records** carry server wall-clock time, so liveness (last-seen) is recorded durably in the stream rather than tracked only in memory.
 
 Replay events use the S2 record timestamp as the scrub timeline. RePlaya writes the rrweb capture time into the S2 timestamp field on append, reads that same S2 timestamp back on read, and passes it to rrweb-player. The ordering and timing the player needs are properties of the stream itself — there is no separate "events table" with its own clock to reconcile.
 
@@ -60,11 +60,11 @@ Session streams use **S2 fencing** to make "stopped" terminal. Fence changes are
 - Requires that fence for event and heartbeat appends.
 - Stops with a single append containing a `stopped` fence command, followed by stopped metadata as the final user-visible record.
 
-Once a session is stopped, a late or duplicate writer fenced on `active` is rejected — concurrency control is part of the storage primitive, not a lock service bolted on beside it. Reads set `ignoreCommandRecords` so replay and listing see metadata/events/heartbeats, while raw tail positions still account for fence records.
+Once a session is stopped, a late or duplicate writer fenced on `active` is rejected — concurrency control comes from the stream's own fencing rather than a separate lock service. Reads set `ignoreCommandRecords` so replay and listing see metadata/events/heartbeats, while raw tail positions still account for fence records.
 
 ## Live tail: S2 read sessions bridged to SSE
 
-This is the capability that's hard to build cleanly any other way, and trivial on S2. Active selected sessions are live-tailed with **S2 read sessions**:
+Active selected sessions are live-tailed with **S2 read sessions**:
 
 1. The dashboard opens `GET /api/sessions/:id/live` from the snapshot tail sequence number.
 2. The server starts an S2 read session at that position and **bridges S2's streaming read to browser Server-Sent Events**.
