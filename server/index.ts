@@ -60,6 +60,7 @@ const REVERSE_TIME_WIDTH = String(REVERSE_TIME_MAX_MS).length
 const DELETE_ON_EMPTY_MIN_AGE_SECS = 60 * 60 * 24
 const RETENTION_AGE_SECS = 60 * 60 * 24 * 28
 const ACTIVE_SESSION_LEASE_MS = Number(process.env.REPLAYA_ACTIVE_SESSION_LEASE_MS ?? 45_000)
+const EVENT_CHUNK_BYTES = 512 * 1024
 const INGEST_AUTH_REQUIRED = parseBooleanEnv(process.env.REPLAYA_INGEST_AUTH_REQUIRED, IS_PRODUCTION)
 const PROJECT_KEYS = splitConfigList(process.env.REPLAYA_PROJECT_KEYS ?? process.env.REPLAYA_PROJECT_KEY)
 const INGEST_AUTH_ENABLED = INGEST_AUTH_REQUIRED || PROJECT_KEYS.length > 0
@@ -507,6 +508,27 @@ function parseStoredRecord(body: string): StoredSessionRecord | null {
     if (parsed.kind === 'event' && isObject(parsed.event)) {
       return parsed as StoredSessionRecord
     }
+
+    const chunkIndex = parsed.chunkIndex
+    const chunkCount = parsed.chunkCount
+    const eventTimestamp = parsed.eventTimestamp
+    if (
+      parsed.kind === 'event-chunk' &&
+      typeof parsed.chunkId === 'string' &&
+      typeof chunkIndex === 'number' &&
+      Number.isSafeInteger(chunkIndex) &&
+      typeof chunkCount === 'number' &&
+      Number.isSafeInteger(chunkCount) &&
+      chunkIndex >= 0 &&
+      chunkCount > 0 &&
+      chunkIndex < chunkCount &&
+      typeof eventTimestamp === 'number' &&
+      Number.isFinite(eventTimestamp) &&
+      typeof parsed.data === 'string' &&
+      parsed.encoding === 'json/base64url'
+    ) {
+      return parsed as StoredSessionRecord
+    }
   } catch {
     return null
   }
@@ -570,6 +592,14 @@ function timestampFromEnvelope(envelope: StoredSessionRecord) {
     return envelope.event.timestamp
   }
 
+  if (
+    envelope.kind === 'event-chunk' &&
+    typeof envelope.eventTimestamp === 'number' &&
+    Number.isFinite(envelope.eventTimestamp)
+  ) {
+    return envelope.eventTimestamp
+  }
+
   throw new HttpError(400, 'Session event records must include a valid timestamp.')
 }
 
@@ -602,10 +632,165 @@ function isEventReadRecord(
   return record.envelope.kind === 'event'
 }
 
+function isEventChunkReadRecord(
+  record: StoredReadRecord,
+): record is StoredReadRecord & { envelope: Extract<StoredSessionRecord, { kind: 'event-chunk' }> } {
+  return record.envelope.kind === 'event-chunk'
+}
+
+function isReplayEventLikeReadRecord(
+  record: StoredReadRecord,
+): record is StoredReadRecord & { envelope: Extract<StoredSessionRecord, { kind: 'event' | 'event-chunk' }> } {
+  return isEventReadRecord(record) || isEventChunkReadRecord(record)
+}
+
 function isHeartbeatReadRecord(
   record: StoredReadRecord,
 ): record is StoredReadRecord & { envelope: Extract<StoredSessionRecord, { kind: 'heartbeat' }> } {
   return record.envelope.kind === 'heartbeat'
+}
+
+function storedRecordsForEvent(
+  sessionId: string,
+  capturedAt: string,
+  event: ReplayEvent,
+  eventCount?: number,
+): StoredSessionRecord[] {
+  const eventJson = JSON.stringify(event)
+  const eventBytes = Buffer.from(eventJson, 'utf8')
+
+  if (eventBytes.length <= EVENT_CHUNK_BYTES) {
+    return [
+      {
+        kind: 'event',
+        sessionId,
+        capturedAt,
+        event,
+        eventCount,
+      },
+    ]
+  }
+
+  const eventTimestamp = timestampFromEnvelope({
+    kind: 'event',
+    sessionId,
+    capturedAt,
+    event,
+    eventCount,
+  })
+  const chunkId = randomUUID()
+  const chunkCount = Math.ceil(eventBytes.length / EVENT_CHUNK_BYTES)
+  const chunks: StoredSessionRecord[] = []
+
+  for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex++) {
+    const start = chunkIndex * EVENT_CHUNK_BYTES
+    const end = Math.min(start + EVENT_CHUNK_BYTES, eventBytes.length)
+    chunks.push({
+      kind: 'event-chunk',
+      sessionId,
+      capturedAt,
+      chunkId,
+      chunkIndex,
+      chunkCount,
+      eventTimestamp,
+      data: eventBytes.subarray(start, end).toString('base64url'),
+      encoding: 'json/base64url',
+      eventCount,
+    })
+  }
+
+  return chunks
+}
+
+interface ChunkAssemblyGroup {
+  chunkCount: number
+  chunks: Map<number, StoredReadRecord & { envelope: Extract<StoredSessionRecord, { kind: 'event-chunk' }> }>
+}
+
+function assembleChunkGroup(
+  group: ChunkAssemblyGroup,
+  completedBy: StoredReadRecord & { envelope: Extract<StoredSessionRecord, { kind: 'event-chunk' }> },
+) {
+  const orderedChunks: Array<
+    StoredReadRecord & { envelope: Extract<StoredSessionRecord, { kind: 'event-chunk' }> }
+  > = []
+  for (let index = 0; index < group.chunkCount; index++) {
+    const chunk = group.chunks.get(index)
+    if (!chunk) return null
+    orderedChunks.push(chunk)
+  }
+
+  try {
+    const eventJson = Buffer.concat(
+      orderedChunks.map((chunk) => Buffer.from(chunk.envelope.data, 'base64url')),
+    ).toString('utf8')
+    const event = JSON.parse(eventJson) as unknown
+    if (!isObject(event)) return null
+
+    return {
+      seqNum: completedBy.seqNum,
+      s2Timestamp: completedBy.s2Timestamp,
+      envelope: {
+        kind: 'event',
+        sessionId: completedBy.envelope.sessionId,
+        capturedAt: completedBy.envelope.capturedAt,
+        event: event as ReplayEvent,
+        eventCount: completedBy.envelope.eventCount,
+      },
+    } satisfies StoredReadRecord
+  } catch {
+    return null
+  }
+}
+
+function createChunkAssembler() {
+  const groups = new Map<string, ChunkAssemblyGroup>()
+
+  return {
+    push(record: StoredReadRecord) {
+      if (!isEventChunkReadRecord(record)) return record
+
+      const { chunkId, chunkIndex, chunkCount } = record.envelope
+      if (
+        !Number.isSafeInteger(chunkIndex) ||
+        !Number.isSafeInteger(chunkCount) ||
+        chunkIndex < 0 ||
+        chunkCount < 1 ||
+        chunkIndex >= chunkCount
+      ) {
+        return null
+      }
+
+      const existing = groups.get(chunkId)
+      if (!existing && chunkIndex !== 0) return null
+
+      const group: ChunkAssemblyGroup = existing ?? { chunkCount, chunks: new Map() }
+      if (group.chunkCount !== chunkCount || group.chunks.has(chunkIndex)) {
+        groups.delete(chunkId)
+        return null
+      }
+
+      group.chunks.set(chunkIndex, record)
+      groups.set(chunkId, group)
+
+      if (group.chunks.size < chunkCount) return null
+
+      groups.delete(chunkId)
+      return assembleChunkGroup(group, record)
+    },
+  }
+}
+
+function assembleChunkedEvents(records: StoredReadRecord[]) {
+  const assembler = createChunkAssembler()
+  const assembled: StoredReadRecord[] = []
+
+  for (const record of records) {
+    const next = assembler.push(record)
+    if (next) assembled.push(next)
+  }
+
+  return assembled
 }
 
 async function appendStoredRecords(sessionId: string, envelopes: StoredSessionRecord[]) {
@@ -738,7 +923,7 @@ async function readStreamRecords(streamName: string) {
     }
   }
 
-  return { records, tailSeqNum: Number.isFinite(tailSeqNum) ? tailSeqNum : nextSeqNum }
+  return { records: assembleChunkedEvents(records), tailSeqNum: Number.isFinite(tailSeqNum) ? tailSeqNum : nextSeqNum }
 }
 
 async function readStoredRecords(sessionId: string) {
@@ -825,6 +1010,10 @@ async function loadSessionDetail(
 ): Promise<SessionDetail> {
   const { streamName, records, tailSeqNum } = await readStoredRecords(sessionId)
   const summary = summarizeSession(sessionId, streamName, tailSeqNum, records, options)
+  return sessionDetailFromSummaryAndRecords(summary, records)
+}
+
+function sessionDetailFromSummaryAndRecords(summary: SessionSummary, records: StoredReadRecord[]): SessionDetail {
   const metadataHistory = records
     .filter(isMetadataReadRecord)
     .map((record) => record.envelope.metadata)
@@ -966,20 +1155,28 @@ function latestRecordOfKind<K extends StoredSessionRecord['kind']>(
     .at(-1)
 }
 
+function latestReplayEventLikeRecord(records: StoredReadRecord[]) {
+  return records.filter(isReplayEventLikeReadRecord).at(-1)
+}
+
+function eventCountFromRecord(record?: StoredReadRecord) {
+  if (!record || !isReplayEventLikeReadRecord(record)) return undefined
+  return record.envelope.eventCount
+}
+
 function summaryFromStreamSnapshot(snapshot: Awaited<ReturnType<typeof readStreamSnapshot>>): SessionSummary | null {
   const sessionId = sessionIdFromStreamName(snapshot.streamName)
   if (!sessionId) return null
 
   const firstMetadata = snapshot.firstRecords.find(isMetadataReadRecord)?.envelope.metadata
-  const firstEvent = snapshot.firstRecords.find(isEventReadRecord)
+  const firstEvent = snapshot.firstRecords.find(isReplayEventLikeReadRecord)
   const latestStopMetadata = snapshot.tailRecords
     .filter(isMetadataReadRecord)
     .filter((record) => record.envelope.metadata.status === 'stopped')
     .at(-1)?.envelope.metadata
   const latestMetadata = latestStopMetadata ?? firstMetadata
   const latestHeartbeat = latestRecordOfKind(snapshot.tailRecords, 'heartbeat')?.envelope
-  const latestEventRecord = latestRecordOfKind(snapshot.tailRecords, 'event')
-  const latestEvent = latestEventRecord?.envelope
+  const latestEventRecord = latestReplayEventLikeRecord(snapshot.tailRecords)
   const fallbackTime = new Date(sessionCreatedAtMs(sessionId)).toISOString()
   const lastSeenAt = snapshot.tailTimestamp.toISOString()
   const firstEventAt = firstEvent?.s2Timestamp.toISOString()
@@ -987,7 +1184,7 @@ function summaryFromStreamSnapshot(snapshot: Awaited<ReturnType<typeof readStrea
   const eventCount =
     latestStopMetadata?.eventCount ??
     latestHeartbeat?.eventCount ??
-    latestEvent?.eventCount ??
+    eventCountFromRecord(latestEventRecord) ??
     firstMetadata?.eventCount ??
     0
 
@@ -1445,15 +1642,18 @@ app.get(
         ignoreCommandRecords: true,
       })
       cancelReadSession = (reason: string) => readSession.cancel(reason)
+      const chunkAssembler = createChunkAssembler()
 
       for await (const record of readSession) {
         if (closed) break
 
         const parsed = storedReadRecordFromS2(record)
         if (!parsed) continue
+        const assembled = chunkAssembler.push(parsed)
+        if (!assembled) continue
 
-        if (isEventReadRecord(parsed)) {
-          const event = eventWithS2Timestamp(parsed)
+        if (isEventReadRecord(assembled)) {
+          const event = eventWithS2Timestamp(assembled)
           if (!event) continue
 
           writeSse(
@@ -1462,50 +1662,50 @@ app.get(
             {
               type: 'event',
               sessionId,
-              seqNum: parsed.seqNum,
-              s2Timestamp: parsed.s2Timestamp.toISOString(),
-              capturedAt: parsed.envelope.capturedAt,
+              seqNum: assembled.seqNum,
+              s2Timestamp: assembled.s2Timestamp.toISOString(),
+              capturedAt: assembled.envelope.capturedAt,
               event,
             },
-            parsed.seqNum,
+            assembled.seqNum,
           )
-          scheduleLeaseExpiration(parsed.envelope.capturedAt)
-        } else if (isHeartbeatReadRecord(parsed)) {
-          scheduleLeaseExpiration(parsed.envelope.lastSeenAt)
+          scheduleLeaseExpiration(assembled.envelope.capturedAt)
+        } else if (isHeartbeatReadRecord(assembled)) {
+          scheduleLeaseExpiration(assembled.envelope.lastSeenAt)
           writeSse(
             response,
             'session-heartbeat',
             {
               type: 'heartbeat',
               sessionId,
-              seqNum: parsed.seqNum,
-              s2Timestamp: parsed.s2Timestamp.toISOString(),
-              lastSeenAt: parsed.envelope.lastSeenAt,
+              seqNum: assembled.seqNum,
+              s2Timestamp: assembled.s2Timestamp.toISOString(),
+              lastSeenAt: assembled.envelope.lastSeenAt,
             },
-            parsed.seqNum,
+            assembled.seqNum,
           )
-        } else if (isMetadataReadRecord(parsed)) {
+        } else if (isMetadataReadRecord(assembled)) {
           writeSse(
             response,
             'session-metadata',
             {
               type: 'metadata',
               sessionId,
-              seqNum: parsed.seqNum,
-              s2Timestamp: parsed.s2Timestamp.toISOString(),
-              metadata: parsed.envelope.metadata,
+              seqNum: assembled.seqNum,
+              s2Timestamp: assembled.s2Timestamp.toISOString(),
+              metadata: assembled.envelope.metadata,
             },
-            parsed.seqNum,
+            assembled.seqNum,
           )
 
-          if (parsed.envelope.metadata.status === 'stopped') {
-            latestLastSeenAt = parsed.envelope.metadata.lastSeenAt ?? parsed.envelope.metadata.updatedAt
-            latestStoppedAt = parsed.envelope.metadata.stoppedAt ?? parsed.envelope.metadata.updatedAt
+          if (assembled.envelope.metadata.status === 'stopped') {
+            latestLastSeenAt = assembled.envelope.metadata.lastSeenAt ?? assembled.envelope.metadata.updatedAt
+            latestStoppedAt = assembled.envelope.metadata.stoppedAt ?? assembled.envelope.metadata.updatedAt
             closeWithStatus('explicit-stop')
             break
           }
 
-          scheduleLeaseExpiration(parsed.envelope.metadata.lastSeenAt ?? parsed.envelope.metadata.updatedAt)
+          scheduleLeaseExpiration(assembled.envelope.metadata.lastSeenAt ?? assembled.envelope.metadata.updatedAt)
         }
       }
     } catch (error) {
@@ -1565,25 +1765,24 @@ app.post(
         : undefined
     const firstEventCount =
       reportedEventCount === undefined ? undefined : Math.max(1, reportedEventCount - events.length + 1)
+    const records = events.flatMap((event, index) =>
+      storedRecordsForEvent(
+        sessionId,
+        now,
+        event,
+        firstEventCount === undefined ? undefined : firstEventCount + index,
+      ),
+    )
 
     let result
     try {
-      result = await appendStoredRecords(
-        sessionId,
-        events.map((event, index) => ({
-          kind: 'event',
-          sessionId,
-          capturedAt: now,
-          event,
-          eventCount: firstEventCount === undefined ? undefined : firstEventCount + index,
-        })),
-      )
+      result = await appendStoredRecords(sessionId, records)
     } catch (error) {
       if (!(error instanceof FencingTokenMismatchError)) throw error
       result = { appended: 0, tailSeqNum: null }
     }
 
-    response.json(result)
+    response.json({ ...result, appended: result.appended === 0 ? 0 : events.length })
   }),
 )
 

@@ -33,6 +33,8 @@ Replay events use the S2 record timestamp as the scrub timeline. RePlaya writes 
 
 Writes use the **S2 Producer API**, which batches event records over an append session and applies backpressure. An append is acknowledged only once it is durable, and a record is readable as soon as its batch is acked — there is no server-side buffer-and-flush window between ingestion and storage.
 
+Most rrweb events fit in one S2 record. When a large event, usually an initial full snapshot, would be too large for one record, RePlaya frames the event JSON into `event-chunk` records. Each chunk carries the event's rrweb timestamp as its S2 timestamp; reads assemble the chunks back into one rrweb event before the dashboard or live tail sees it. That keeps the public API "append events, read events" while staying under S2's per-record payload limit.
+
 The browser recorder batches client-side before posting (it flushes roughly every 250ms or every 20 events, with exponential backoff on failure and a bounded in-memory buffer during outages), so end-to-end there is a small, sub-second client batching delay — but nothing buffers on the server between the API and S2.
 
 The browser **never receives the S2 token**. The recorder talks only to RePlaya's own HTTP API; all S2 reads and writes are proxied through the server.

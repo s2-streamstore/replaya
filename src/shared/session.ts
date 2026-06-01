@@ -128,6 +128,18 @@ export type StoredSessionRecord =
       event: ReplayEvent
       eventCount?: number
     }
+  | {
+      kind: 'event-chunk'
+      sessionId: string
+      capturedAt: string
+      chunkId: string
+      chunkIndex: number
+      chunkCount: number
+      eventTimestamp: number
+      data: string
+      encoding: 'json/base64url'
+      eventCount?: number
+    }
 
 export interface HealthResponse {
   ok: boolean

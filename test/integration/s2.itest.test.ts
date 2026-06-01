@@ -74,6 +74,7 @@ integration('S2 integration (s2 lite): create → append → replay', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ events, eventCount }),
     })
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
   // Consume an SSE stream, invoking onMessage(eventName, data) per frame.
   // Returns an abort handle once the response headers are in.
@@ -226,6 +227,41 @@ integration('S2 integration (s2 lite): create → append → replay', () => {
     } finally {
       stream.close()
     }
+  })
+
+  it('round-trips an rrweb event larger than one S2 record', async () => {
+    const { session } = (await json('/api/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: 'Large snapshot', source: 'integration' }),
+    })) as { session: SessionDetail }
+
+    await sleep(50)
+    const t = Date.now() - 10
+    const largeText = 'x'.repeat(1_200_000)
+    const events: ReplayEvent[] = [
+      { type: 4, timestamp: t, data: { href: 'https://example.test/large-snapshot' } },
+      {
+        type: 2,
+        timestamp: t + 1,
+        data: {
+          node: { type: 0, childNodes: [], largeText },
+          initialOffset: { top: 0, left: 0 },
+        },
+      },
+      { type: 3, timestamp: t + 2, data: { source: 2, type: 2, id: 3, x: 222, y: 111 } },
+    ]
+
+    const append = await postEvents(session.id, events, events.length)
+    expect(append.appended).toBe(events.length)
+
+    const detail = ((await json(`/api/sessions/${session.id}`)) as { session: SessionDetail }).session
+    const snapshot = detail.events.find((event) => event.type === 2)
+
+    expect((snapshot?.data as { node?: { largeText?: string } } | undefined)?.node?.largeText?.length).toBe(
+      largeText.length,
+    )
+    expect(detail.events.some((event) => (event.data as { x?: number } | undefined)?.x === 222)).toBe(true)
   })
 
   it('deletes a session from S2', async () => {
