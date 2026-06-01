@@ -22,3 +22,24 @@ jobs:
       - run: npm run lint
       - run: npm run build
       - run: npm test
+
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.x
+          cache: npm
+      - name: Start s2 lite (in-memory S2 emulator)
+        run: docker run -d --name s2lite -p 8080:80 ghcr.io/s2-streamstore/s2 lite
+      - name: Wait for s2 lite
+        run: timeout 60 bash -c 'until curl -s -o /dev/null http://localhost:8080; do sleep 1; done'
+      - run: npm ci
+      - name: Integration tests (create → append → replay → delete)
+        run: npm run test:integration
+        env:
+          S2_TEST_ENDPOINT: http://localhost:8080
+      - name: s2 lite logs
+        if: failure()
+        run: docker logs s2lite

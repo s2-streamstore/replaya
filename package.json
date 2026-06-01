@@ -15,6 +15,7 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:integration": "vitest run test/integration",
     "preview": "vite preview",
     "start": "node dist-server/server/index.js"
   },

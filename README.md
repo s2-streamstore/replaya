@@ -163,4 +163,19 @@ The dashboard health endpoint reports the effective account and basin endpoints 
 - `npm run dev` starts the API and Vite.
 - `npm run build` type-checks the client/server and builds the frontend.
 - `npm run lint` runs ESLint.
+- `npm test` runs the unit/smoke suite (recorder invariants + HTTP smoke). No S2 required.
+- `npm run test:integration` runs the S2 round-trip tests against a real S2 API.
 - `npm start` serves the built frontend and API from Express.
+
+## Testing
+
+`npm test` covers recorder invariants and an HTTP smoke of the server (recorder delivery, security headers, ingest-auth rejection) without needing S2.
+
+The integration tests exercise the real create → append → replay → delete path against [`s2 lite`](https://github.com/s2-streamstore/s2), the in-memory S2 emulator. They are skipped unless `S2_TEST_ENDPOINT` is set:
+
+```bash
+docker run -d -p 8080:80 ghcr.io/s2-streamstore/s2 lite
+S2_TEST_ENDPOINT=http://localhost:8080 npm run test:integration
+```
+
+CI runs both: a build/lint/unit-test job (Node 20 + 24) and an integration job that boots `s2 lite` and runs the round-trip suite.
