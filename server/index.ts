@@ -61,7 +61,8 @@ const ACTIVE_SESSION_LEASE_MS = Number(process.env.REPLAYA_ACTIVE_SESSION_LEASE_
 const INGEST_AUTH_REQUIRED = parseBooleanEnv(process.env.REPLAYA_INGEST_AUTH_REQUIRED, IS_PRODUCTION)
 const PROJECT_KEYS = splitConfigList(process.env.REPLAYA_PROJECT_KEYS ?? process.env.REPLAYA_PROJECT_KEY)
 const INGEST_AUTH_ENABLED = INGEST_AUTH_REQUIRED || PROJECT_KEYS.length > 0
-const APPEND_TOKEN_SECRET = process.env.REPLAYA_APPEND_TOKEN_SECRET ?? S2_ACCESS_TOKEN ?? randomUUID()
+const APPEND_TOKEN_SECRET_EXPLICIT = process.env.REPLAYA_APPEND_TOKEN_SECRET
+const APPEND_TOKEN_SECRET = APPEND_TOKEN_SECRET_EXPLICIT ?? randomUUID()
 const APPEND_TOKEN_TTL_MS = Number(process.env.REPLAYA_APPEND_TOKEN_TTL_MS ?? 1000 * 60 * 60 * 24)
 const ALLOWED_CAPTURE_ORIGINS = splitConfigList(process.env.REPLAYA_ALLOWED_CAPTURE_ORIGINS ?? process.env.CORS_ORIGIN)
 const ALLOW_ANY_CAPTURE_ORIGIN = ALLOWED_CAPTURE_ORIGINS.includes('*')
@@ -1664,14 +1665,13 @@ app.get('/vendor/rrweb.min.js', (_request, response) => {
   response.sendFile(path.join(process.cwd(), 'node_modules/rrweb/dist/rrweb.min.js'))
 })
 
-app.get('/recorder-test', (request, response) => {
+app.get('/recorder-test', (_request, response) => {
   if (!RECORDER_TEST_ENABLED) {
     response.status(404).send('Not found')
     return
   }
 
-  const origin = `${request.protocol}://${request.get('host')}`
-  response.type('html').send(recorderTestPage(origin))
+  response.type('html').send(recorderTestPage())
 })
 
 const distPath = path.join(process.cwd(), 'dist')
@@ -1696,6 +1696,22 @@ const errorHandler: ErrorRequestHandler = (error, _request, response, next) => {
 }
 
 app.use(errorHandler)
+
+function assertStartupConfig() {
+  if (INGEST_AUTH_ENABLED && !APPEND_TOKEN_SECRET_EXPLICIT) {
+    const message =
+      'Ingest auth is enabled but REPLAYA_APPEND_TOKEN_SECRET is not set. Set it to a stable, random, secret value (e.g. `openssl rand -hex 32`).'
+    if (IS_PRODUCTION) {
+      console.error(`[replaya] ${message} Refusing to start.`)
+      process.exit(1)
+    }
+    console.warn(
+      `[replaya] ${message} Falling back to an ephemeral per-process secret — append tokens will not survive a restart or work across instances.`,
+    )
+  }
+}
+
+assertStartupConfig()
 
 app.listen(PORT, () => {
   console.log(`RePlaya API listening on http://localhost:${PORT}`)

@@ -16,7 +16,7 @@ export function recorderScript() {
     userId: script && script.dataset.userId || "",
     projectKey: script && script.dataset.projectKey || "",
     autostart: !(script && script.dataset.autostart === "false"),
-    maskAllInputs: Boolean(script && script.dataset.maskAllInputs === "true"),
+    maskAllInputs: !(script && script.dataset.maskAllInputs === "false"),
     blockClass: "replaya-block",
     ignoreClass: "replaya-ignore",
     flushEveryMs: 250,
@@ -243,7 +243,7 @@ export function recorderScript() {
 })();`
 }
 
-export function recorderTestPage(origin: string) {
+export function recorderTestPage() {
   return String.raw`<!doctype html>
 <html lang="en">
   <head>
@@ -291,8 +291,8 @@ export function recorderTestPage(origin: string) {
       </div>
     </main>
     <script>
-      !function(w,d,s,u){w.replaya=w.replaya||function(){(w.replaya.q=w.replaya.q||[]).push(arguments)};var e=d.createElement(s);e.async=1;e.src=u;d.head.appendChild(e)}(window,document,"script","${origin}/recorder.js");
-      replaya("init", { apiHost: "${origin}", source: "local-fixture", title: "Recorder fixture" });
+      !function(w,d,s,u){w.replaya=w.replaya||function(){(w.replaya.q=w.replaya.q||[]).push(arguments)};var e=d.createElement(s);e.async=1;e.src=u;d.head.appendChild(e)}(window,document,"script","/recorder.js");
+      replaya("init", { apiHost: window.location.origin, source: "local-fixture", title: "Recorder fixture" });
     </script>
   </body>
 </html>`

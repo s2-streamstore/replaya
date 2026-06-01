@@ -7,6 +7,9 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': 'http://localhost:8787',
+      '/recorder.js': 'http://localhost:8787',
+      '/recorder-test': 'http://localhost:8787',
+      '/vendor': 'http://localhost:8787',
     },
   },
 })
