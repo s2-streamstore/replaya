@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   AlertTriangle,
-  CheckCircle2,
+  Check,
   ChevronLeft,
   ChevronRight,
   Code2,
@@ -9,17 +9,26 @@ import {
   Database,
   Download,
   ExternalLink,
+  Keyboard,
+  Layers,
   LoaderCircle,
+  Maximize2,
+  MousePointerClick,
+  Navigation,
   Play,
   RefreshCw,
   Search,
+  Terminal,
+  X,
+  Zap,
 } from 'lucide-react'
 import { api } from './api'
-import { ReplayPlayer } from './ReplayPlayer'
+import { ReplayPlayer, type ReplayPlayerHandle } from './ReplayPlayer'
 import type {
   HealthResponse,
   ListSessionsResponse,
   LiveSessionMessage,
+  ReplayEvent,
   SessionDetail,
   SessionIndexMessage,
   SessionSummary,
@@ -27,7 +36,7 @@ import type {
 import './App.css'
 
 type LiveStatus = 'idle' | 'connecting' | 'live' | 'closed' | 'error'
-type ViewMode = 'replay' | 'capture'
+type InspectorTab = 'activity' | 'details'
 const SESSION_PAGE_LIMIT = 20
 
 const dateFormat = new Intl.DateTimeFormat('en-US', {
@@ -151,6 +160,137 @@ function displaySessionTitle(session: Pick<SessionSummary, 'title' | 'source'>) 
   return session.title
 }
 
+function formatOffset(ms: number) {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000))
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${minutes}:${seconds.toString().padStart(2, '0')}`
+}
+
+function prettyUrl(value: string) {
+  try {
+    const url = new URL(value)
+    const path = `${url.pathname}${url.search}`
+    return path.length > 1 ? path : url.host
+  } catch {
+    return value
+  }
+}
+
+function identityLabel(session: Pick<SessionDetail, 'userId' | 'distinctId'>) {
+  return session.userId ?? session.distinctId ?? 'Anonymous'
+}
+
+type ActivityKind = 'load' | 'nav' | 'click' | 'input' | 'resize' | 'event'
+type ActivityFilter = 'all' | 'click' | 'input' | 'nav'
+
+interface ActivityEntry {
+  id: string
+  offsetMs: number
+  kind: ActivityKind
+  label: string
+  detail?: string
+  count?: number
+  inputNodeId?: number
+}
+
+const ACTIVITY_FILTERS: { id: ActivityFilter; label: string; kinds?: ActivityKind[] }[] = [
+  { id: 'all', label: 'All' },
+  { id: 'click', label: 'Clicks', kinds: ['click'] },
+  { id: 'input', label: 'Inputs', kinds: ['input'] },
+  { id: 'nav', label: 'Pages', kinds: ['nav', 'load'] },
+]
+
+const MOUSE_INTERACTION_LABELS: Record<number, string> = {
+  2: 'Click',
+  3: 'Right click',
+  4: 'Double click',
+}
+
+function readData(event: ReplayEvent): Record<string, unknown> | null {
+  const data = (event as { data?: unknown }).data
+  return typeof data === 'object' && data !== null ? (data as Record<string, unknown>) : null
+}
+
+function buildActivity(events: ReplayEvent[]): ActivityEntry[] {
+  if (events.length === 0) return []
+
+  const base = events.reduce(
+    (min, event) => (typeof event.timestamp === 'number' ? Math.min(min, event.timestamp) : min),
+    Number.POSITIVE_INFINITY,
+  )
+  if (!Number.isFinite(base)) return []
+
+  const entries: ActivityEntry[] = []
+
+  events.forEach((event, index) => {
+    if (typeof event.timestamp !== 'number') return
+    const offsetMs = Math.max(0, event.timestamp - base)
+    const id = `${index}`
+    const data = readData(event)
+
+    if (event.type === 2) {
+      entries.push({ id, offsetMs, kind: 'load', label: 'Page snapshot' })
+    } else if (event.type === 1) {
+      entries.push({ id, offsetMs, kind: 'load', label: 'Page load' })
+    } else if (event.type === 4 && data) {
+      const href = typeof data.href === 'string' ? data.href : undefined
+      entries.push({ id, offsetMs, kind: 'nav', label: 'Navigation', detail: href ? prettyUrl(href) : undefined })
+    } else if (event.type === 5) {
+      const tag = data && typeof data.tag === 'string' ? data.tag : 'Custom event'
+      entries.push({ id, offsetMs, kind: 'event', label: tag })
+    } else if (event.type === 3 && data) {
+      const source = data.source
+      if (source === 2) {
+        const label = MOUSE_INTERACTION_LABELS[data.type as number]
+        if (!label) return
+        const detail =
+          typeof data.x === 'number' && typeof data.y === 'number'
+            ? `${Math.round(data.x as number)}, ${Math.round(data.y as number)}`
+            : undefined
+        entries.push({ id, offsetMs, kind: 'click', label, detail })
+      } else if (source === 5) {
+        entries.push({
+          id,
+          offsetMs,
+          kind: 'input',
+          label: 'Input',
+          inputNodeId: typeof data.id === 'number' ? (data.id as number) : undefined,
+        })
+      } else if (source === 4) {
+        const detail =
+          typeof data.width === 'number' && typeof data.height === 'number'
+            ? `${data.width as number}×${data.height as number}`
+            : undefined
+        entries.push({ id, offsetMs, kind: 'resize', label: 'Viewport resize', detail })
+      }
+    }
+  })
+
+  // Collapse runs of keystroke-level inputs on the same field into a single entry.
+  const collapsed: ActivityEntry[] = []
+  for (const entry of entries) {
+    const previous = collapsed[collapsed.length - 1]
+    if (entry.kind === 'input' && previous && previous.kind === 'input' && previous.inputNodeId === entry.inputNodeId) {
+      previous.count = (previous.count ?? 1) + 1
+      previous.detail = `${previous.count} changes`
+      continue
+    }
+    collapsed.push({ ...entry })
+  }
+
+  return collapsed
+}
+
+const ACTIVITY_ICONS: Record<ActivityKind, typeof Play> = {
+  load: Layers,
+  nav: Navigation,
+  click: MousePointerClick,
+  input: Keyboard,
+  resize: Maximize2,
+  event: Zap,
+}
+
 function App() {
   const [health, setHealth] = useState<HealthResponse | null>(null)
   const [sessions, setSessions] = useState<SessionSummary[]>([])
@@ -161,7 +301,9 @@ function App() {
   const [loadingReplay, setLoadingReplay] = useState(false)
   const [copied, setCopied] = useState(false)
   const [liveStatus, setLiveStatus] = useState<LiveStatus>('idle')
-  const [view, setView] = useState<ViewMode>('replay')
+  const [showInstall, setShowInstall] = useState(false)
+  const [inspectorTab, setInspectorTab] = useState<InspectorTab>('activity')
+  const [seekedEntryId, setSeekedEntryId] = useState<string | null>(null)
   const [latestSessionPage, setLatestSessionPage] = useState(true)
   const [sessionIndexTailSeqNum, setSessionIndexTailSeqNum] = useState<number | null>(null)
   const [sessionPageIndex, setSessionPageIndex] = useState(0)
@@ -169,6 +311,7 @@ function App() {
   const [sessionHasMore, setSessionHasMore] = useState(false)
   const [nextSessionPageCursor, setNextSessionPageCursor] = useState<string | undefined>()
   const selectedRef = useRef<SessionDetail | null>(null)
+  const playerRef = useRef<ReplayPlayerHandle | null>(null)
 
   const appOrigin = typeof window === 'undefined' ? 'http://localhost:8787' : window.location.origin
   const selectedId = selected?.id ?? null
@@ -210,6 +353,7 @@ ${initOptions.join(',\n')}
 
   const loadSession = useCallback(async (id: string) => {
     setLoadingReplay(true)
+    setSeekedEntryId(null)
     try {
       const { session } = await api.getSession(id)
       setSelected(session)
@@ -525,6 +669,18 @@ ${initOptions.join(',\n')}
     URL.revokeObjectURL(url)
   }, [selected])
 
+  const copySessionId = useCallback(async () => {
+    if (!selected) return
+    await navigator.clipboard.writeText(selected.id)
+  }, [selected])
+
+  const activity = useMemo(() => (selected ? buildActivity(selected.events) : []), [selected])
+
+  const seekToEntry = useCallback((entry: ActivityEntry) => {
+    playerRef.current?.seek(entry.offsetMs)
+    setSeekedEntryId(entry.id)
+  }, [])
+
   const selectedTitle = selected ? displaySessionTitle(selected) : 'Playback'
 
   return (
@@ -532,33 +688,21 @@ ${initOptions.join(',\n')}
       <header className="topbar">
         <div className="product-mark">
           <span className="app-logo" aria-hidden="true">
-            R
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M9 7.5v9l7.5-4.5z" fill="currentColor" />
+            </svg>
           </span>
-          <div>
-            <p className="eyebrow">RePlaya</p>
-            <h1>Session Replay</h1>
+          <div className="wordmark">
+            <h1>RePlaya</h1>
+            <span className="tagline">Session replay</span>
           </div>
         </div>
-        <nav className="view-tabs" aria-label="Workspace">
-          <button
-            type="button"
-            className={view === 'replay' ? 'view-tab active' : 'view-tab'}
-            onClick={() => setView('replay')}
-          >
-            <Play size={16} aria-hidden="true" />
-            Replay
-          </button>
-          <button
-            type="button"
-            className={view === 'capture' ? 'view-tab active' : 'view-tab'}
-            onClick={() => setView('capture')}
-          >
-            <Code2 size={16} aria-hidden="true" />
-            Capture
-          </button>
-        </nav>
         <div className="status-cluster">
           <StatusPill health={health} />
+          <button type="button" className="ghost-button" onClick={() => setShowInstall(true)}>
+            <Code2 size={16} aria-hidden="true" />
+            Install
+          </button>
           <button type="button" className="icon-button" onClick={refreshSessions} title="Refresh sessions">
             <RefreshCw size={18} aria-hidden="true" className={loadingSessions ? 'spin' : ''} />
           </button>
@@ -572,14 +716,10 @@ ${initOptions.join(',\n')}
         </div>
       )}
 
-      {view === 'replay' ? (
-        <div className="app-grid">
+      <div className="app-grid">
           <aside className="sessions-panel">
             <div className="panel-heading">
-              <div>
-                <p className="eyebrow">S2 streams</p>
-                <h2>Sessions</h2>
-              </div>
+              <h2>Sessions</h2>
               <span className="count-badge">{sessions.length}</span>
             </div>
             <label className="search-field">
@@ -657,46 +797,44 @@ ${initOptions.join(',\n')}
             </div>
           </aside>
 
-          <section className="replay-panel">
-            <div className="panel-heading">
-              <div>
-                <p className="eyebrow">Replay</p>
-                <h2>{selectedTitle}</h2>
-                {selected && <code className="heading-code">{selected.streamName}</code>}
-              </div>
-              <div className="button-row">
-                {selected && <span className={`live-pill ${liveStatus}`}>{liveStatusLabel(liveStatus, selected)}</span>}
-                <button
-                  type="button"
-                  className="icon-button"
-                  onClick={() => selected && void loadSession(selected.id)}
-                  title="Reload replay"
-                  disabled={!selected}
-                >
-                  <RefreshCw size={18} aria-hidden="true" className={loadingReplay ? 'spin' : ''} />
-                </button>
-                <button
-                  type="button"
-                  className="icon-button"
-                  onClick={exportSelected}
-                  title="Export JSON"
-                  disabled={!selected}
-                >
-                  <Download size={18} aria-hidden="true" />
-                </button>
-              </div>
-            </div>
-
+          <section className="stage-panel">
             {selected ? (
               <>
-                <div className="replay-stats">
-                  <Metric label="Events" value={selected.events.length} />
-                  <Metric label="Records" value={selected.recordCount} />
-                  <Metric label="Duration" value={formatDuration(selected.durationMs)} />
-                  <Metric label="Timeline" value={selected.status === 'active' ? 'S2 live' : 'S2 record'} />
+                <div className="stage-header">
+                  <div className="stage-id">
+                    <h2>{selectedTitle}</h2>
+                    <div className="stage-meta">
+                      {selected.url && (
+                        <span className="stage-url" title={selected.url}>
+                          {prettyUrl(selected.url)}
+                        </span>
+                      )}
+                      <span>{selected.source ?? 'unknown source'}</span>
+                      <span>{identityLabel(selected)}</span>
+                      <span>{formatDuration(selected.durationMs)}</span>
+                      <span>{formatDate(selected.firstEventAt ?? selected.createdAt)}</span>
+                    </div>
+                  </div>
+                  <div className="button-row">
+                    <span className={`live-pill ${liveStatus}`}>{liveStatusLabel(liveStatus, selected)}</span>
+                    <button type="button" className="icon-button" onClick={() => void copySessionId()} title="Copy session ID">
+                      <Copy size={17} aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-button"
+                      onClick={() => void loadSession(selected.id)}
+                      title="Reload replay"
+                    >
+                      <RefreshCw size={17} aria-hidden="true" className={loadingReplay ? 'spin' : ''} />
+                    </button>
+                    <button type="button" className="icon-button" onClick={exportSelected} title="Export JSON">
+                      <Download size={17} aria-hidden="true" />
+                    </button>
+                  </div>
                 </div>
-                <SessionDetails session={selected} />
                 <ReplayPlayer
+                  ref={playerRef}
                   sessionId={selected.id}
                   events={selected.events}
                   live={selected.status === 'active'}
@@ -707,102 +845,58 @@ ${initOptions.join(',\n')}
               <div className="empty-state">
                 <Play size={22} aria-hidden="true" />
                 <strong>No session selected</strong>
-                <span>Select a session from the stream list.</span>
+                <span>Pick a session on the left to replay it.</span>
               </div>
             )}
           </section>
 
           <aside className="inspector-panel">
-            <div className="panel-heading">
-              <div>
-                <p className="eyebrow">Selection</p>
-                <h2>Stream</h2>
-              </div>
+            <div className="inspector-tabs" role="tablist">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={inspectorTab === 'activity'}
+                className={inspectorTab === 'activity' ? 'inspector-tab active' : 'inspector-tab'}
+                onClick={() => setInspectorTab('activity')}
+              >
+                Activity
+                {selected && activity.length > 0 && <span className="tab-count">{activity.length}</span>}
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={inspectorTab === 'details'}
+                className={inspectorTab === 'details' ? 'inspector-tab active' : 'inspector-tab'}
+                onClick={() => setInspectorTab('details')}
+              >
+                Details
+              </button>
             </div>
 
             {selected ? (
-              <>
-                <ConfigSection title="Selected Stream">
-                  <ConfigRow label="Session" value={<code>{selected.id}</code>} />
-                  <ConfigRow label="Stream" value={<code>{selected.streamName}</code>} />
-                  <ConfigRow label="Source" value={selected.source ?? 'unknown'} />
-                  <ConfigRow label="Status" value={selected.status} />
-                  <ConfigRow label="Stop reason" value={selected.stopReason ?? 'n/a'} />
-                  <ConfigRow label="Live tail" value={liveStatusLabel(liveStatus, selected)} />
-                  <ConfigRow label="Last seq" value={selected.lastSeqNum} />
-                  <ConfigRow label="Last seen" value={selected.lastSeenAt ? formatDate(selected.lastSeenAt) : 'n/a'} />
-                  <ConfigRow label="Last event" value={selected.lastEventAt ? formatDate(selected.lastEventAt) : 'n/a'} />
-                </ConfigSection>
-                <ConfigSection title="Storage">
-                  <ConfigRow label="Timeline" value={selected.timelineSource} />
-                  <ConfigRow label="Basin" value={<code>{health?.basin ?? 'checking'}</code>} />
-                  <ConfigRow label="Prefix" value={<code>{health?.streamPrefix ?? 'checking'}</code>} />
-                </ConfigSection>
-              </>
+              inspectorTab === 'activity' ? (
+                <ActivityList entries={activity} activeId={seekedEntryId} onSeek={seekToEntry} />
+              ) : (
+                <DetailsPanel session={selected} liveStatus={liveStatus} health={health} />
+              )
             ) : (
               <div className="empty-list">
                 <Database size={18} aria-hidden="true" />
-                <span>No stream selected</span>
+                <span>No session selected</span>
               </div>
             )}
           </aside>
         </div>
-      ) : (
-        <div className="capture-grid">
-          <section className="capture-panel">
-            <div className="panel-heading">
-              <div>
-                <p className="eyebrow">Capture</p>
-                <h2>Recorder</h2>
-              </div>
-              <button type="button" className="ghost-button" onClick={() => window.open('/recorder-test', '_blank')}>
-                <ExternalLink size={16} aria-hidden="true" />
-                Fixture
-              </button>
-            </div>
 
-            <div className="install-copy">
-              <div className="copy-heading">
-                <Code2 size={18} aria-hidden="true" />
-                <span>Browser snippet</span>
-              </div>
-              <pre className="code-block">
-                <code>{snippet}</code>
-              </pre>
-              <button type="button" className="primary-button" onClick={() => void copySnippet()}>
-                {copied ? <CheckCircle2 size={16} aria-hidden="true" /> : <Copy size={16} aria-hidden="true" />}
-                {copied ? 'Copied' : 'Copy'}
-              </button>
-            </div>
-          </section>
-
-          <aside className="capture-panel">
-            <ConfigSection title="Endpoints">
-              <ConfigRow label="Script" value={<code>{appOrigin}/recorder.js</code>} />
-              <ConfigRow label="Ingest" value={<code>{appOrigin}/api/sessions/:id/events</code>} />
-              <ConfigRow label="Streams" value={<code>{health?.streamPrefix ?? 'checking'}</code>} />
-              <ConfigRow label="Account" value={<code>{health?.s2Endpoints.account ?? 'checking'}</code>} />
-              <ConfigRow label="Basin" value={<code>{health?.s2Endpoints.basin ?? 'checking'}</code>} />
-            </ConfigSection>
-
-            <ConfigSection title="Stream Policy">
-              <ConfigRow label="Timestamping" value="client-require" />
-              <ConfigRow label="Create on append" value="enabled" />
-              <ConfigRow label="Active lease" value={health ? formatDuration(health.activeSessionLeaseMs) : '45s'} />
-              <ConfigRow label="Delete empty" value="24h" />
-              <ConfigRow label="Retention" value="28d" />
-            </ConfigSection>
-
-            <ConfigSection title="Security">
-              <ConfigRow label="Ingest auth" value={health?.security.ingestAuthRequired ? 'required' : 'dev/open'} />
-              <ConfigRow
-                label="Capture origins"
-                value={health?.security.allowedCaptureOriginsConfigured ? 'restricted' : 'not configured'}
-              />
-              <ConfigRow label="Fixture" value={health?.security.recorderTestEnabled ? 'enabled' : 'disabled'} />
-            </ConfigSection>
-          </aside>
-        </div>
+      {showInstall && (
+        <InstallDialog
+          snippet={snippet}
+          copied={copied}
+          appOrigin={appOrigin}
+          health={health}
+          onCopy={() => void copySnippet()}
+          onClose={() => setShowInstall(false)}
+        />
       )}
     </main>
   )
@@ -826,11 +920,202 @@ function StatusPill({ health }: { health: HealthResponse | null }) {
   )
 }
 
-function Metric({ label, value }: { label: string; value: number | string }) {
+function ActivityList({
+  entries,
+  activeId,
+  onSeek,
+}: {
+  entries: ActivityEntry[]
+  activeId: string | null
+  onSeek: (entry: ActivityEntry) => void
+}) {
+  const [filter, setFilter] = useState<ActivityFilter>('all')
+
+  if (entries.length === 0) {
+    return (
+      <div className="empty-list">
+        <Zap size={18} aria-hidden="true" />
+        <span>No interactions yet</span>
+      </div>
+    )
+  }
+
+  const activeFilter = ACTIVITY_FILTERS.find((option) => option.id === filter) ?? ACTIVITY_FILTERS[0]
+  const shown = activeFilter.kinds
+    ? entries.filter((entry) => activeFilter.kinds!.includes(entry.kind))
+    : entries
+
   return (
-    <div className="metric">
-      <span>{label}</span>
-      <strong>{value}</strong>
+    <div className="activity-wrap">
+      <div className="activity-filter" role="tablist" aria-label="Filter activity">
+        {ACTIVITY_FILTERS.map((option) => {
+          const count = option.kinds ? entries.filter((entry) => option.kinds!.includes(entry.kind)).length : entries.length
+          return (
+            <button
+              type="button"
+              key={option.id}
+              role="tab"
+              aria-selected={option.id === filter}
+              className={option.id === filter ? 'activity-chip active' : 'activity-chip'}
+              onClick={() => setFilter(option.id)}
+            >
+              {option.label}
+              <span className="chip-count">{count}</span>
+            </button>
+          )
+        })}
+      </div>
+      {shown.length === 0 ? (
+        <div className="empty-list">
+          <span>No {activeFilter.label.toLowerCase()} in this session</span>
+        </div>
+      ) : (
+        <ol className="activity-list">
+          {shown.map((entry) => {
+            const Icon = ACTIVITY_ICONS[entry.kind]
+            return (
+              <li key={entry.id}>
+                <button
+                  type="button"
+                  className={`activity-item ${entry.kind}${entry.id === activeId ? ' active' : ''}`}
+                  onClick={() => onSeek(entry)}
+                  title={`Seek to ${formatOffset(entry.offsetMs)}`}
+                >
+                  <span className="activity-time">{formatOffset(entry.offsetMs)}</span>
+                  <span className="activity-icon" aria-hidden="true">
+                    <Icon size={14} />
+                  </span>
+                  <span className="activity-body">
+                    <span className="activity-label">{entry.label}</span>
+                    {entry.detail && <span className="activity-detail">{entry.detail}</span>}
+                  </span>
+                </button>
+              </li>
+            )
+          })}
+        </ol>
+      )}
+    </div>
+  )
+}
+
+function DetailsPanel({
+  session,
+  liveStatus,
+  health,
+}: {
+  session: SessionDetail
+  liveStatus: LiveStatus
+  health: HealthResponse | null
+}) {
+  return (
+    <div className="details-scroll">
+      <ConfigSection title="Session">
+        <ConfigRow label="ID" value={<code>{session.id}</code>} />
+        <ConfigRow label="Source" value={session.source ?? 'unknown'} />
+        <ConfigRow label="User" value={session.userId ?? session.distinctId ?? 'anonymous'} />
+        <ConfigRow label="Status" value={session.status} />
+        <ConfigRow label="Live tail" value={liveStatusLabel(liveStatus, session)} />
+        {session.stopReason && <ConfigRow label="Stopped" value={session.stopReason} />}
+      </ConfigSection>
+      <ConfigSection title="Timeline">
+        <ConfigRow label="Events" value={session.events.length} />
+        <ConfigRow label="First event" value={session.firstEventAt ? formatDate(session.firstEventAt) : 'n/a'} />
+        <ConfigRow label="Last event" value={session.lastEventAt ? formatDate(session.lastEventAt) : 'n/a'} />
+        <ConfigRow label="Last seen" value={session.lastSeenAt ? formatDate(session.lastSeenAt) : 'n/a'} />
+        <ConfigRow label="Duration" value={formatDuration(session.durationMs)} />
+      </ConfigSection>
+      <ConfigSection title="Storage">
+        <ConfigRow label="Stream" value={<code>{session.streamName}</code>} />
+        <ConfigRow label="Records" value={session.recordCount} />
+        <ConfigRow label="Tail seq" value={session.lastSeqNum} />
+        <ConfigRow label="Basin" value={<code>{health?.basin ?? 'checking'}</code>} />
+      </ConfigSection>
+    </div>
+  )
+}
+
+function InstallDialog({
+  snippet,
+  copied,
+  appOrigin,
+  health,
+  onCopy,
+  onClose,
+}: {
+  snippet: string
+  copied: boolean
+  appOrigin: string
+  health: HealthResponse | null
+  onCopy: () => void
+  onClose: () => void
+}) {
+  return (
+    <div className="modal-backdrop" role="presentation" onClick={onClose}>
+      <div
+        className="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Install RePlaya"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="modal-head">
+          <div>
+            <h2>Install</h2>
+            <p className="modal-sub">Drop this snippet into your page to start recording sessions.</p>
+          </div>
+          <button type="button" className="icon-button" onClick={onClose} title="Close">
+            <X size={18} aria-hidden="true" />
+          </button>
+        </div>
+
+        <div className="modal-body">
+          <div className="install-copy">
+            <div className="copy-heading">
+              <Terminal size={16} aria-hidden="true" />
+              <span>Browser snippet</span>
+              <button type="button" className="ghost-button copy-inline" onClick={onCopy}>
+                {copied ? <Check size={15} aria-hidden="true" /> : <Copy size={15} aria-hidden="true" />}
+                {copied ? 'Copied' : 'Copy'}
+              </button>
+            </div>
+            <pre className="code-block">
+              <code>{snippet}</code>
+            </pre>
+            <button type="button" className="ghost-button fixture-link" onClick={() => window.open('/recorder-test', '_blank')}>
+              <ExternalLink size={15} aria-hidden="true" />
+              Open recorder fixture
+            </button>
+          </div>
+
+          <div className="modal-config">
+            <ConfigSection title="Endpoints">
+              <ConfigRow label="Script" value={<code>{appOrigin}/recorder.js</code>} />
+              <ConfigRow label="Ingest" value={<code>{appOrigin}/api/sessions/:id/events</code>} />
+              <ConfigRow label="Streams" value={<code>{health?.streamPrefix ?? 'checking'}</code>} />
+              <ConfigRow label="Account" value={<code>{health?.s2Endpoints.account ?? 'checking'}</code>} />
+              <ConfigRow label="Basin" value={<code>{health?.s2Endpoints.basin ?? 'checking'}</code>} />
+            </ConfigSection>
+
+            <ConfigSection title="Stream policy">
+              <ConfigRow label="Timestamping" value="client-require" />
+              <ConfigRow label="Create on append" value="enabled" />
+              <ConfigRow label="Active lease" value={health ? formatDuration(health.activeSessionLeaseMs) : '45s'} />
+              <ConfigRow label="Delete empty" value="24h" />
+              <ConfigRow label="Retention" value="28d" />
+            </ConfigSection>
+
+            <ConfigSection title="Security">
+              <ConfigRow label="Ingest auth" value={health?.security.ingestAuthRequired ? 'required' : 'dev/open'} />
+              <ConfigRow
+                label="Capture origins"
+                value={health?.security.allowedCaptureOriginsConfigured ? 'restricted' : 'not configured'}
+              />
+              <ConfigRow label="Fixture" value={health?.security.recorderTestEnabled ? 'enabled' : 'disabled'} />
+            </ConfigSection>
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
@@ -849,33 +1134,6 @@ function ConfigRow({ label, value }: { label: string; value: ReactNode }) {
     <div className="config-row">
       <span>{label}</span>
       <strong>{value}</strong>
-    </div>
-  )
-}
-
-function SessionDetails({ session }: { session: SessionDetail }) {
-  return (
-    <div className="session-details">
-      <div>
-        <span>URL</span>
-        <code>{session.url ?? 'unknown'}</code>
-      </div>
-      <div>
-        <span>Source</span>
-        <code>{session.source ?? 'unknown'}</code>
-      </div>
-      <div>
-        <span>First event</span>
-        <code>{session.firstEventAt ? formatDate(session.firstEventAt) : 'n/a'}</code>
-      </div>
-      <div>
-        <span>Last event</span>
-        <code>{session.lastEventAt ? formatDate(session.lastEventAt) : 'n/a'}</code>
-      </div>
-      <div>
-        <span>Last seen</span>
-        <code>{session.lastSeenAt ? formatDate(session.lastSeenAt) : 'n/a'}</code>
-      </div>
     </div>
   )
 }

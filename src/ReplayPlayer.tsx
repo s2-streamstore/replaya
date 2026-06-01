@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react'
 import 'rrweb-player/dist/style.css'
 import type { eventWithTime } from '@rrweb/types'
 import type RrwebPlayerInstance from 'rrweb-player'
@@ -10,6 +10,10 @@ interface ReplayPlayerProps {
   events: ReplayEvent[]
   live: boolean
   lastSeqNum: number
+}
+
+export interface ReplayPlayerHandle {
+  seek: (offsetMs: number) => void
 }
 
 type DestroyablePlayer = RrwebPlayerInstance & { $destroy: () => void }
@@ -55,7 +59,10 @@ function timelineEndOffset(events: ReplayEvent[], maxSeqNum: number) {
   return firstTimestamp !== null && lastTimestamp !== null ? Math.max(0, lastTimestamp - firstTimestamp) : null
 }
 
-export function ReplayPlayer({ sessionId, events, live, lastSeqNum }: ReplayPlayerProps) {
+export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(function ReplayPlayer(
+  { sessionId, events, live, lastSeqNum },
+  ref,
+) {
   const frameRef = useRef<HTMLDivElement | null>(null)
   const playerRef = useRef<DestroyablePlayer | null>(null)
   const mountedSessionRef = useRef<string | null>(null)
@@ -92,6 +99,21 @@ export function ReplayPlayer({ sessionId, events, live, lastSeqNum }: ReplayPlay
     followingLiveEdgeRef.current = nextFollowingLiveEdge
     setFollowingLiveEdge((current) => (current === nextFollowingLiveEdge ? current : nextFollowingLiveEdge))
   }
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      seek(offsetMs: number) {
+        const player = playerRef.current
+        if (!player) return
+        followingLiveEdgeRef.current = false
+        setFollowingLiveEdge(false)
+        player.goto(Math.max(0, offsetMs), false)
+        setPlayerState('paused')
+      },
+    }),
+    [],
+  )
 
   useEffect(() => {
     eventsRef.current = events
@@ -297,4 +319,4 @@ export function ReplayPlayer({ sessionId, events, live, lastSeqNum }: ReplayPlay
       </div>
     </>
   )
-}
+})
