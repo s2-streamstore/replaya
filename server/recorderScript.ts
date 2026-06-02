@@ -285,44 +285,114 @@ export function recorderTestPage() {
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>RePlaya recorder fixture</title>
     <style>
-      body { margin: 0; font: 15px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f4f6f8; color: #111827; }
-      main { max-width: 980px; margin: 0 auto; padding: 32px 20px; }
-      header, section { border: 1px solid #d8dee6; border-radius: 8px; background: #fff; padding: 18px; margin-bottom: 14px; }
+      :root {
+        --bg: #f5f7f9; --surface: #ffffff; --surface-2: #f2f4f7; --border: #e6e8ee;
+        --text: #1a1d23; --muted: #6b7280; --accent: #0f766e; --accent-hover: #115e59;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; min-height: 100vh;
+        font: 15px/1.55 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        letter-spacing: -0.006em; background: var(--bg); color: var(--text);
+        -webkit-font-smoothing: antialiased;
+      }
+      main { max-width: 1000px; margin: 0 auto; padding: 36px 20px 60px; }
       h1, h2, p { margin: 0; }
-      h1 { font-size: 28px; }
-      h2 { font-size: 18px; margin-bottom: 12px; }
-      .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
-      label { display: grid; gap: 6px; margin-bottom: 12px; color: #475467; font-size: 13px; font-weight: 700; }
-      input, textarea, select, button { font: inherit; }
-      input, textarea, select { border: 1px solid #d8dee6; border-radius: 8px; padding: 10px; }
-      button { min-height: 38px; border: 0; border-radius: 8px; background: #2563eb; color: #fff; font-weight: 700; padding: 0 14px; }
-      .replaya-block { border: 1px dashed #bfdbfe; background: #eff6ff; padding: 12px; border-radius: 8px; }
+      .topbar { display: flex; align-items: center; gap: 13px; margin-bottom: 26px; }
+      .logo {
+        width: 36px; height: 36px; flex: none; border-radius: 9px;
+        background: linear-gradient(180deg, #75d7e5 0 42%, #0f766e 43% 67%, #f2c76f 68% 100%);
+        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.22), 0 1px 2px rgba(15, 118, 110, 0.18);
+      }
+      .brand h1 { font-size: 19px; letter-spacing: -0.02em; }
+      .brand p { color: var(--muted); font-size: 13px; }
+      .pill {
+        margin-left: auto; display: inline-flex; align-items: center; gap: 7px;
+        padding: 7px 13px; border-radius: 999px; border: 1px solid var(--border);
+        background: var(--surface); color: var(--muted); font-size: 12.5px; font-weight: 600;
+      }
+      .pill .dot { width: 8px; height: 8px; border-radius: 999px; background: #16a34a; animation: pulse 1.4s ease-in-out infinite; }
+      .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+      .card {
+        border: 1px solid var(--border); border-radius: 12px; background: var(--surface);
+        padding: 22px; box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+      }
+      .card h2 { font-size: 15px; letter-spacing: -0.01em; }
+      .card .hint { margin: 4px 0 18px; color: var(--muted); font-size: 13px; }
+      label { display: grid; gap: 6px; margin-bottom: 14px; color: var(--muted); font-size: 12.5px; font-weight: 600; }
+      input, textarea, select {
+        font: inherit; width: 100%; padding: 10px 12px; border: 1px solid var(--border);
+        border-radius: 8px; background: var(--surface); color: var(--text);
+      }
+      input:focus, textarea:focus, select:focus {
+        outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.16);
+      }
+      .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+      button { font: inherit; font-weight: 600; min-height: 38px; padding: 0 16px; border-radius: 8px; border: 1px solid transparent; cursor: pointer; }
+      .btn-primary { background: var(--accent); color: #fff; }
+      .btn-primary:hover { background: var(--accent-hover); }
+      .btn-ghost { background: var(--surface); border-color: var(--border); color: var(--text); }
+      .btn-ghost:hover { background: var(--surface-2); }
+      .stat { display: flex; align-items: baseline; gap: 9px; margin: 4px 0 16px; }
+      .stat b { font-size: 30px; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+      .stat span { color: var(--muted); font-size: 13px; }
+      .meter { height: 8px; margin-top: 16px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+      .meter > i { display: block; height: 100%; width: 0; background: var(--accent); border-radius: 999px; transition: width 0.25s ease; }
+      .toast { margin-top: 14px; min-height: 18px; color: var(--accent); font-size: 13px; font-weight: 600; }
+      .replaya-block { margin-top: 18px; border: 1px dashed #c7d2e0; background: #eef5ff; border-radius: 8px; padding: 14px; color: #475467; font-size: 13px; }
+      footer { margin-top: 26px; color: var(--muted); font-size: 12.5px; text-align: center; }
+      code { font-family: ui-monospace, "SF Mono", Menlo, monospace; background: var(--surface-2); padding: 2px 6px; border-radius: 5px; font-size: 12px; }
+      body.inverted { background: #0e1116; }
+      body.inverted .card { background: #161a22; border-color: #262c38; }
+      body.inverted .card h2, body.inverted .brand h1 { color: #f3f4f6; }
+      body.inverted .card .hint, body.inverted .brand p, body.inverted label { color: #9aa3b2; }
+      body.inverted input, body.inverted textarea, body.inverted select { background: #1d222c; border-color: #2c333f; color: #e6e8ec; }
       @media (max-width: 720px) { .grid { grid-template-columns: 1fr; } }
+      @media (prefers-reduced-motion: reduce) { .pill .dot { animation: none; } }
+      @keyframes pulse { 0%, 100% { opacity: 0.5; transform: scale(0.85); } 50% { opacity: 1; transform: scale(1.1); } }
     </style>
   </head>
   <body>
     <main>
-      <header>
-        <p>RePlaya recorder fixture</p>
-        <h1>Capture validation workspace</h1>
-      </header>
+      <div class="topbar">
+        <span class="logo" aria-hidden="true"></span>
+        <div class="brand">
+          <h1>RePlaya recorder fixture</h1>
+          <p>Capture validation workspace — type, click, and watch it replay.</p>
+        </div>
+        <span class="pill"><span class="dot"></span>Recording</span>
+      </div>
       <div class="grid">
-        <section>
-          <h2>Form Controls</h2>
-          <label>Contact <input placeholder="contact email" /></label>
-          <label>Segment <select><option>Internal</option><option>Partner</option><option>Customer</option></select></label>
-          <label>Notes <textarea rows="4" placeholder="session notes"></textarea></label>
-          <button onclick="document.querySelector('#result').textContent = 'Saved at ' + new Date().toLocaleTimeString()">Save</button>
-          <p id="result"></p>
+        <section class="card">
+          <h2>Account settings</h2>
+          <p class="hint">Inputs are masked by default — your keystrokes never leave the page.</p>
+          <label>Full name <input placeholder="Ada Lovelace" /></label>
+          <label>Work email <input type="email" placeholder="ada@example.com" /></label>
+          <label>Plan <select><option>Starter</option><option>Team</option><option>Enterprise</option></select></label>
+          <label>Notes <textarea rows="3" placeholder="What are you testing today?"></textarea></label>
+          <div class="row">
+            <button class="btn-primary" onclick="document.getElementById('save-toast').textContent = 'Saved ' + new Date().toLocaleTimeString()">Save changes</button>
+            <button class="btn-ghost" onclick="document.getElementById('save-toast').textContent = 'Changes reverted'">Cancel</button>
+          </div>
+          <p class="toast" id="save-toast"></p>
         </section>
-        <section>
-          <h2>Interaction Events</h2>
-          <button onclick="document.body.style.background = document.body.style.background === 'rgb(244, 246, 248)' ? '#eef6ff' : '#f4f6f8'">Toggle state</button>
-          <button onclick="document.querySelector('#counter').textContent = Number(document.querySelector('#counter').textContent) + 1">Increment</button>
-          <p>Counter: <strong id="counter">0</strong></p>
-          <div class="replaya-block">Blocked capture region</div>
+        <section class="card">
+          <h2>Interaction lab</h2>
+          <p class="hint">Clicks and DOM mutations for the recorder to capture.</p>
+          <div class="stat"><b id="counter">0</b><span>interactions logged</span></div>
+          <div class="row">
+            <button class="btn-primary" onclick="(function(){var c=document.getElementById('counter');var n=Number(c.textContent)+1;c.textContent=n;document.getElementById('meter-fill').style.width=Math.min(100,n*10)+'%';})()">Log interaction</button>
+            <button class="btn-ghost" onclick="document.getElementById('counter').textContent='0';document.getElementById('meter-fill').style.width='0%'">Reset</button>
+            <button class="btn-ghost" onclick="document.body.classList.toggle('inverted')">Toggle theme</button>
+          </div>
+          <div class="meter"><i id="meter-fill"></i></div>
+          <div class="replaya-block">
+            <strong>Blocked region (<code>replaya-block</code>)</strong><br />
+            Anything inside this box is omitted from the recording.
+          </div>
         </section>
       </div>
+      <footer>RePlaya recorder fixture · source <code>local-fixture</code></footer>
     </main>
     <script>
       !function(w,d,s,u){w.replaya=w.replaya||function(){(w.replaya.q=w.replaya.q||[]).push(arguments)};var e=d.createElement(s);e.async=1;e.src=u;d.head.appendChild(e)}(window,document,"script","/recorder.js");

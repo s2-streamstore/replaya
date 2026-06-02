@@ -201,6 +201,7 @@ function App() {
   const [error, setError] = useState<string | null>(null)
   const [loadingSessions, setLoadingSessions] = useState(false)
   const [loadingReplay, setLoadingReplay] = useState(false)
+  const [booting, setBooting] = useState(true)
   const [copied, setCopied] = useState(false)
   const [liveStatus, setLiveStatus] = useState<LiveStatus>('idle')
   const [showInstall, setShowInstall] = useState(false)
@@ -330,6 +331,8 @@ ${initOptions.join(',\n')}
         if (!cancelled) {
           setError(nextError instanceof Error ? nextError.message : 'Unable to connect to the API.')
         }
+      } finally {
+        if (!cancelled) setBooting(false)
       }
     }
 
@@ -652,31 +655,40 @@ ${initOptions.join(',\n')}
               />
             </label>
             <div className="session-list">
-              {filteredSessions.map((session) => (
-                <button
-                  type="button"
-                  className={session.id === selectedId ? 'session-item active' : 'session-item'}
-                  key={session.id}
-                  onClick={() => void loadSession(session.id)}
-                >
-                  <span className="session-title-row">
-                    <span className="session-title">{session.title}</span>
-                    <span className={`status-badge ${session.status}`}>{session.status}</span>
-                  </span>
-                  <span className="session-meta">
-                    {session.source ?? 'unknown'} · {session.eventCount} events ·{' '}
-                    {formatDuration(session.durationMs)}
-                  </span>
-                  <span className="stream-name">
-                    {session.streamName} · {formatDate(session.updatedAt)}
-                  </span>
-                </button>
-              ))}
-              {filteredSessions.length === 0 && (
+              {booting && sessions.length === 0 ? (
+                Array.from({ length: 5 }).map((_, index) => (
+                  <div className="session-skeleton" key={index} aria-hidden="true">
+                    <span className="skeleton-line title" />
+                    <span className="skeleton-line meta" />
+                    <span className="skeleton-line stream" />
+                  </div>
+                ))
+              ) : filteredSessions.length === 0 ? (
                 <div className="empty-list">
                   <Database size={18} aria-hidden="true" />
-                  <span>No sessions</span>
+                  <span>{filter.trim() ? `No sessions match “${filter.trim()}”` : 'No sessions yet'}</span>
                 </div>
+              ) : (
+                filteredSessions.map((session) => (
+                  <button
+                    type="button"
+                    className={session.id === selectedId ? 'session-item active' : 'session-item'}
+                    key={session.id}
+                    onClick={() => void loadSession(session.id)}
+                  >
+                    <span className="session-title-row">
+                      <span className="session-title">{session.title}</span>
+                      <span className={`status-badge ${session.status}`}>{session.status}</span>
+                    </span>
+                    <span className="session-meta">
+                      {session.source ?? 'unknown'} · {session.eventCount} events ·{' '}
+                      {formatDuration(session.durationMs)}
+                    </span>
+                    <span className="stream-name">
+                      {session.streamName} · {formatDate(session.updatedAt)}
+                    </span>
+                  </button>
+                ))
               )}
             </div>
             <div className="session-pagination">

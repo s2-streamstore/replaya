@@ -517,6 +517,46 @@
 }
 
 /* ============================================================
+   Loading skeletons
+   ============================================================ */
+.session-skeleton {
+  display: grid;
+  gap: 7px;
+  padding: 10px;
+  border-radius: var(--r);
+}
+
+.skeleton-line {
+  height: 9px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--surface-2) 25%, var(--surface-3) 37%, var(--surface-2) 63%);
+  background-size: 400% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+}
+
+.skeleton-line.title {
+  width: 62%;
+}
+
+.skeleton-line.meta {
+  width: 86%;
+}
+
+.skeleton-line.stream {
+  width: 44%;
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+
+  100% {
+    background-position: 0 0;
+  }
+}
+
+/* ============================================================
    Buttons
    ============================================================ */
 .primary-button,
@@ -760,14 +800,34 @@
   display: grid;
   grid-template-columns: 42px 22px minmax(0, 1fr);
   align-items: center;
+  position: relative;
   width: 100%;
   gap: 9px;
-  padding: 8px 8px;
+  padding: 7px 8px;
   border: 0;
   border-radius: var(--r);
   background: transparent;
   text-align: left;
   transition: background 0.1s ease;
+}
+
+/* Connect the event icons into a continuous session timeline rail. */
+.activity-item::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 70px;
+  width: 1px;
+  background: var(--border);
+}
+
+.activity-item:first-child::before {
+  top: 50%;
+}
+
+.activity-item:last-child::before {
+  bottom: 50%;
 }
 
 .activity-item:hover {
@@ -791,12 +851,14 @@
 
 .activity-icon {
   display: grid;
+  position: relative;
   width: 22px;
   height: 22px;
   place-items: center;
   border-radius: var(--r-sm);
   background: var(--surface-3);
   color: var(--muted);
+  box-shadow: 0 0 0 3px var(--surface);
 }
 
 .activity-item.click .activity-icon {
@@ -1149,10 +1211,17 @@
 .replay-player-shell.live.following .playback-dot {
   background: #3b82f6;
   box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.16);
+  animation: livePulse 1.3s ease-in-out infinite;
 }
 
 .playback-dot.playing {
   animation: livePulse 1.1s ease-in-out infinite;
+}
+
+/* While following the live edge, ring the whole stage so it's unmistakable. */
+.replay-player-shell.live.following .replay-frame {
+  border-color: var(--info-border);
+  box-shadow: inset 0 1px 3px rgba(16, 24, 40, 0.05), 0 0 0 3px rgba(59, 130, 246, 0.1);
 }
 
 .replay-player-shell.recorded.playing .rr-controller__btns button:first-child,
