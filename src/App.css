@@ -1107,8 +1107,6 @@
    Replay player
    ============================================================ */
 .replay-frame {
-  display: grid;
-  place-items: center;
   width: 100%;
   min-height: 460px;
   overflow: auto;
@@ -1120,10 +1118,14 @@
   box-shadow: inset 0 1px 3px rgba(16, 24, 40, 0.05);
 }
 
-/* Lift the player off the dotted stage as a single screen-plus-controls card. */
+/* Lift the player off the dotted stage as a single screen-plus-controls card.
+   `margin: 0 auto` (not grid/flex centering) so a player wider than the frame
+   on a narrow viewport overflows rightward and stays scrollable, never clipped
+   into unreachable negative space. `overflow: clip` rounds the corners without
+   creating a scroll container that could trap recorded-page overlays. */
 .replay-frame .rr-player {
   margin: 0 auto;
-  overflow: hidden;
+  overflow: clip;
   border-radius: var(--r);
   background: var(--surface);
   box-shadow: 0 1px 2px rgba(16, 24, 40, 0.09), 0 12px 30px rgba(16, 24, 40, 0.09);
