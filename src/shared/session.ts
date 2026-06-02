@@ -140,7 +140,6 @@ export interface HealthResponse {
   ok: boolean
   configured: boolean
   basin: string | null
-  streamPrefix: string
   activeSessionLeaseMs: number
   s2Status: 'ready' | 'error' | 'missing-config'
   s2Endpoints: {

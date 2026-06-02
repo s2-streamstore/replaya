@@ -51,12 +51,13 @@ const S2_ACCESS_TOKEN = process.env.S2_ACCESS_TOKEN
 const S2_BASIN = process.env.S2_BASIN
 const S2_ACCOUNT_ENDPOINT = process.env.S2_ACCOUNT_ENDPOINT
 const S2_BASIN_ENDPOINT = process.env.S2_BASIN_ENDPOINT
-const STREAM_ROOT = (process.env.S2_STREAM_PREFIX ?? 'sessions/').replace(/\/+$/, '') || 'sessions'
 const NODE_ENV = process.env.NODE_ENV ?? 'development'
 const IS_PRODUCTION = NODE_ENV === 'production'
 const JSON_BODY_LIMIT = process.env.REPLAYA_JSON_BODY_LIMIT ?? '8mb'
-const SESSION_STREAM_PREFIX = `${STREAM_ROOT}/`
-const SESSION_INDEX_STREAM = `${STREAM_ROOT}.index/sessions`
+// The basin is dedicated to RePlaya: session streams live at its root, keyed by
+// an inverted timestamp path. The sidecar index lives under a non-numeric name so
+// it never collides with a session stream and sorts clear of the listing.
+const SESSION_INDEX_STREAM = 'index/sessions'
 const REVERSE_TIME_MAX_MS = 9_999_999_999_999
 const REVERSE_TIME_WIDTH = String(REVERSE_TIME_MAX_MS).length
 const DELETE_ON_EMPTY_MIN_AGE_SECS = 60 * 60 * 24
@@ -408,7 +409,7 @@ function reverseTimePath(createdAtMs: number) {
 }
 
 function sessionStreamName(sessionId: string) {
-  return `${SESSION_STREAM_PREFIX}${reverseTimePath(sessionCreatedAtMs(sessionId))}/${sessionId}`
+  return `${reverseTimePath(sessionCreatedAtMs(sessionId))}/${sessionId}`
 }
 
 function sessionIdFromStreamName(streamName: string) {
@@ -422,9 +423,7 @@ function isDigits(value: string, length: number) {
 }
 
 function isCurrentSessionStreamName(streamName: string) {
-  if (!streamName.startsWith(SESSION_STREAM_PREFIX)) return false
-
-  const parts = streamName.slice(SESSION_STREAM_PREFIX.length).split('/')
+  const parts = streamName.split('/')
   return (
     parts.length === 5 &&
     isDigits(parts[0] ?? '', 4) &&
@@ -1383,7 +1382,6 @@ async function listSessionSummaries(limit: number, startAfter?: string) {
   const latestPage = startAfter === undefined
   const indexTailSeqNum = latestPage ? await readSessionIndexTailSeqNum() : null
   const page = await basin.streams.list({
-    prefix: SESSION_STREAM_PREFIX,
     startAfter,
     limit,
   })
@@ -1472,7 +1470,6 @@ app.get(
       ok: false,
       configured: Boolean(S2_ACCESS_TOKEN && S2_BASIN),
       basin: S2_BASIN ?? null,
-      streamPrefix: SESSION_STREAM_PREFIX,
       activeSessionLeaseMs: ACTIVE_SESSION_LEASE_MS,
       s2Status: S2_ACCESS_TOKEN && S2_BASIN ? 'error' : 'missing-config',
       s2Endpoints: {
