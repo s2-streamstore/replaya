@@ -1385,25 +1385,29 @@ async function listSessionSummaries(limit: number, startAfter?: string) {
     startAfter,
     limit,
   })
+  // The index stream and any deleted streams share the basin root, so derive
+  // pagination from the session streams that survive filtering — otherwise a
+  // trailing non-session stream produces a phantom "Older" page.
+  const sessionStreams = page.streams.filter(
+    (streamInfo) => !streamInfo.deletedAt && isCurrentSessionStreamName(streamInfo.name),
+  )
   const summaries = (
     await Promise.all(
-      page.streams
-        .filter((streamInfo) => !streamInfo.deletedAt && isCurrentSessionStreamName(streamInfo.name))
-        .map(async (streamInfo) => {
-          try {
-            return summaryFromStreamSnapshot(await readStreamSnapshot(streamInfo.name))
-          } catch (error) {
-            if (isS2Status(error, 404) || isS2Status(error, 409)) return null
-            throw error
-          }
-        }),
+      sessionStreams.map(async (streamInfo) => {
+        try {
+          return summaryFromStreamSnapshot(await readStreamSnapshot(streamInfo.name))
+        } catch (error) {
+          if (isS2Status(error, 404) || isS2Status(error, 409)) return null
+          throw error
+        }
+      }),
     )
   ).filter((summary): summary is SessionSummary => summary !== null)
 
   return {
     summaries,
-    hasMore: page.hasMore,
-    nextStartAfter: page.streams.at(-1)?.name,
+    hasMore: page.hasMore && sessionStreams.length > 0,
+    nextStartAfter: sessionStreams.at(-1)?.name,
     latestPage,
     indexTailSeqNum,
   }
