@@ -54,10 +54,12 @@ const S2_BASIN_ENDPOINT = process.env.S2_BASIN_ENDPOINT
 const NODE_ENV = process.env.NODE_ENV ?? 'development'
 const IS_PRODUCTION = NODE_ENV === 'production'
 const JSON_BODY_LIMIT = process.env.REPLAYA_JSON_BODY_LIMIT ?? '8mb'
-// The basin is dedicated to RePlaya: session streams live at its root, keyed by
-// an inverted timestamp path. The sidecar index lives under a non-numeric name so
-// it never collides with a session stream and sorts clear of the listing.
-const SESSION_INDEX_STREAM = 'index/sessions'
+// The basin is dedicated to RePlaya. Session streams always live under a fixed
+// prefix so listing them is a single prefix-scoped scan; the sidecar index sits
+// just outside that prefix, so it never shows up in the scan.
+const STREAM_ROOT = 'sessions'
+const SESSION_STREAM_PREFIX = `${STREAM_ROOT}/`
+const SESSION_INDEX_STREAM = `${STREAM_ROOT}.index/sessions`
 const REVERSE_TIME_MAX_MS = 9_999_999_999_999
 const REVERSE_TIME_WIDTH = String(REVERSE_TIME_MAX_MS).length
 const DELETE_ON_EMPTY_MIN_AGE_SECS = 60 * 60 * 24
@@ -409,7 +411,7 @@ function reverseTimePath(createdAtMs: number) {
 }
 
 function sessionStreamName(sessionId: string) {
-  return `${reverseTimePath(sessionCreatedAtMs(sessionId))}/${sessionId}`
+  return `${SESSION_STREAM_PREFIX}${reverseTimePath(sessionCreatedAtMs(sessionId))}/${sessionId}`
 }
 
 function sessionIdFromStreamName(streamName: string) {
@@ -423,7 +425,9 @@ function isDigits(value: string, length: number) {
 }
 
 function isCurrentSessionStreamName(streamName: string) {
-  const parts = streamName.split('/')
+  if (!streamName.startsWith(SESSION_STREAM_PREFIX)) return false
+
+  const parts = streamName.slice(SESSION_STREAM_PREFIX.length).split('/')
   return (
     parts.length === 5 &&
     isDigits(parts[0] ?? '', 4) &&
@@ -1382,32 +1386,29 @@ async function listSessionSummaries(limit: number, startAfter?: string) {
   const latestPage = startAfter === undefined
   const indexTailSeqNum = latestPage ? await readSessionIndexTailSeqNum() : null
   const page = await basin.streams.list({
+    prefix: SESSION_STREAM_PREFIX,
     startAfter,
     limit,
   })
-  // The index stream and any deleted streams share the basin root, so derive
-  // pagination from the session streams that survive filtering — otherwise a
-  // trailing non-session stream produces a phantom "Older" page.
-  const sessionStreams = page.streams.filter(
-    (streamInfo) => !streamInfo.deletedAt && isCurrentSessionStreamName(streamInfo.name),
-  )
   const summaries = (
     await Promise.all(
-      sessionStreams.map(async (streamInfo) => {
-        try {
-          return summaryFromStreamSnapshot(await readStreamSnapshot(streamInfo.name))
-        } catch (error) {
-          if (isS2Status(error, 404) || isS2Status(error, 409)) return null
-          throw error
-        }
-      }),
+      page.streams
+        .filter((streamInfo) => !streamInfo.deletedAt && isCurrentSessionStreamName(streamInfo.name))
+        .map(async (streamInfo) => {
+          try {
+            return summaryFromStreamSnapshot(await readStreamSnapshot(streamInfo.name))
+          } catch (error) {
+            if (isS2Status(error, 404) || isS2Status(error, 409)) return null
+            throw error
+          }
+        }),
     )
   ).filter((summary): summary is SessionSummary => summary !== null)
 
   return {
     summaries,
-    hasMore: page.hasMore && sessionStreams.length > 0,
-    nextStartAfter: sessionStreams.at(-1)?.name,
+    hasMore: page.hasMore,
+    nextStartAfter: page.streams.at(-1)?.name,
     latestPage,
     indexTailSeqNum,
   }
