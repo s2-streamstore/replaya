@@ -634,14 +634,6 @@ function toAppendRecords(records: StoredWriteRecord[]) {
   })
 }
 
-function fenceAppendRecord(fencingToken: string, timestamp?: number | Date) {
-  return AppendRecord.bytes({
-    body: utf8Bytes(fencingToken),
-    headers: [bytesHeader('', 'fence')],
-    timestamp,
-  })
-}
-
 function timestampFromEnvelope(envelope: StoredSessionRecord) {
   if (envelope.kind === 'metadata') {
     const timestamp = Date.parse(envelope.metadata.stoppedAt ?? envelope.metadata.updatedAt ?? envelope.capturedAt)
@@ -1535,7 +1527,7 @@ app.post(
     const result = await appendRecordsToStream(
       sessionStreamName(id),
       [
-        fenceAppendRecord(ACTIVE_FENCE_TOKEN, new Date(now)),
+        AppendRecord.fence(ACTIVE_FENCE_TOKEN, new Date(now)),
         ...toAppendRecords([
           {
             kind: 'metadata',
@@ -1986,7 +1978,7 @@ app.post(
       const result = await appendRecordsToStream(
         sessionStreamName(sessionId),
         [
-          fenceAppendRecord(STOPPED_FENCE_TOKEN, new Date(now)),
+          AppendRecord.fence(STOPPED_FENCE_TOKEN, new Date(now)),
           ...toAppendRecords([
             {
               kind: 'metadata',
