@@ -55,7 +55,6 @@ interface SessionPaging {
   pageIndex: number
   cursors: Array<string | undefined>
   hasMore: boolean
-  nextCursor?: string
   latestPage: boolean
   indexTailSeqNum: number | null
 }
@@ -181,14 +180,6 @@ function liveStatusLabel(status: LiveStatus, selected: SessionDetail | null) {
   return 'Live idle'
 }
 
-function displaySessionTitle(session: Pick<SessionSummary, 'title' | 'source'>) {
-  if (session.title === 'Drop-in test page' && session.source === 'local-test') {
-    return 'Recorder fixture'
-  }
-
-  return session.title
-}
-
 function identityLabel(session: Pick<SessionDetail, 'userId' | 'distinctId'>) {
   return session.userId ?? session.distinctId ?? 'Anonymous'
 }
@@ -254,7 +245,6 @@ ${initOptions.join(',\n')}
         pageIndex,
         cursors,
         hasMore: list.hasMore,
-        nextCursor: list.nextStartAfter,
         latestPage: list.latestPage,
         indexTailSeqNum: list.latestPage ? list.indexTailSeqNum : null,
       }
@@ -306,8 +296,9 @@ ${initOptions.join(',\n')}
   }, [loadSessionsPage, paging])
 
   const loadOlderSessionsPage = useCallback(async () => {
-    if (!paging.hasMore || !paging.nextCursor) return
-    await loadSessionsPage(paging.pageIndex + 1, paging.nextCursor, { selectFirst: true })
+    const nextCursor = paging.cursors[paging.pageIndex + 1]
+    if (!paging.hasMore || !nextCursor) return
+    await loadSessionsPage(paging.pageIndex + 1, nextCursor, { selectFirst: true })
   }, [loadSessionsPage, paging])
 
   const loadNewerSessionsPage = useCallback(async () => {
@@ -543,7 +534,6 @@ ${initOptions.join(',\n')}
 
     return sessions.filter(
       (session) =>
-        displaySessionTitle(session).toLowerCase().includes(query) ||
         session.title.toLowerCase().includes(query) ||
         session.id.toLowerCase().includes(query) ||
         session.streamName.toLowerCase().includes(query) ||
@@ -609,7 +599,7 @@ ${initOptions.join(',\n')}
     setSeekedEntryId(entry.id)
   }, [])
 
-  const selectedTitle = selected ? displaySessionTitle(selected) : 'Playback'
+  const selectedTitle = selected ? selected.title : 'Playback'
 
   return (
     <main className="workspace">
@@ -670,7 +660,7 @@ ${initOptions.join(',\n')}
                   onClick={() => void loadSession(session.id)}
                 >
                   <span className="session-title-row">
-                    <span className="session-title">{displaySessionTitle(session)}</span>
+                    <span className="session-title">{session.title}</span>
                     <span className={`status-badge ${session.status}`}>{session.status}</span>
                   </span>
                   <span className="session-meta">
@@ -708,7 +698,7 @@ ${initOptions.join(',\n')}
                   type="button"
                   className="ghost-button pagination-button"
                   onClick={() => void loadOlderSessionsPage()}
-                  disabled={loadingSessions || !paging.hasMore || !paging.nextCursor}
+                  disabled={loadingSessions || !paging.hasMore || !paging.cursors[paging.pageIndex + 1]}
                 >
                   Older
                   <ChevronRight size={16} aria-hidden="true" />
@@ -856,7 +846,7 @@ ${initOptions.join(',\n')}
               <div>
                 <h2>Delete session</h2>
                 <p className="modal-sub">
-                  Deletes <code>{displaySessionTitle(selected)}</code> from S2. This can&rsquo;t be undone.
+                  Deletes <code>{selected.title}</code> from S2. This can&rsquo;t be undone.
                 </p>
               </div>
             </div>

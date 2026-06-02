@@ -1099,7 +1099,6 @@ function buildSessionSummary(fields: SessionSummaryFields): SessionSummary {
     streamName: fields.streamName,
     recordCount: fields.tailSeqNum,
     lastSeqNum: Math.max(0, fields.tailSeqNum - 1),
-    timelineSource: 's2-record-timestamp',
     firstEventAt,
     lastEventAt,
     durationMs:
@@ -1155,7 +1154,6 @@ function eventWithS2Timestamp(record: StoredReadRecord): ReplayEvent | null {
       originalTimestamp,
       s2SeqNum: record.seqNum,
       s2Timestamp: record.s2Timestamp.toISOString(),
-      timelineSource: 's2-record-timestamp',
     },
   }
 }
@@ -1306,26 +1304,6 @@ async function readStreamSnapshot(streamName: string, tailReadLimit = 1) {
   }
 }
 
-function latestRecordOfKind<K extends StoredSessionRecord['kind']>(
-  records: StoredReadRecord[],
-  kind: K,
-): (StoredReadRecord & { envelope: Extract<StoredSessionRecord, { kind: K }> }) | undefined {
-  return records
-    .filter((record): record is StoredReadRecord & { envelope: Extract<StoredSessionRecord, { kind: K }> } => {
-      return record.envelope.kind === kind
-    })
-    .at(-1)
-}
-
-function latestReplayEventLikeRecord(records: StoredReadRecord[]) {
-  return records.filter(isReplayEventLikeReadRecord).at(-1)
-}
-
-function eventCountFromRecord(record?: StoredReadRecord) {
-  if (!record || !isReplayEventLikeReadRecord(record)) return undefined
-  return record.envelope.eventCount
-}
-
 function summaryFromStreamSnapshot(snapshot: Awaited<ReturnType<typeof readStreamSnapshot>>): SessionSummary | null {
   const sessionId = sessionIdFromStreamName(snapshot.streamName)
   if (!sessionId) return null
@@ -1337,11 +1315,11 @@ function summaryFromStreamSnapshot(snapshot: Awaited<ReturnType<typeof readStrea
     .filter((record) => record.envelope.metadata.status === 'stopped')
     .at(-1)?.envelope.metadata
   const latestMetadata = latestStopMetadata ?? firstMetadata
-  const latestHeartbeat = latestRecordOfKind(snapshot.tailRecords, 'heartbeat')?.envelope
+  const latestHeartbeat = snapshot.tailRecords.filter(isHeartbeatReadRecord).at(-1)?.envelope
   // Listing snapshots intentionally read raw head/tail windows without assembling chunks.
   // Summaries only need S2 timestamps plus eventCount, which storedRecordsForEvent writes
   // identically onto every chunk in a logical rrweb event.
-  const latestEventRecord = latestReplayEventLikeRecord(snapshot.tailRecords)
+  const latestEventRecord = snapshot.tailRecords.filter(isReplayEventLikeReadRecord).at(-1)
   const lastSeenAt = snapshot.tailTimestamp.toISOString()
 
   const summary = buildSessionSummary({
@@ -1358,7 +1336,7 @@ function summaryFromStreamSnapshot(snapshot: Awaited<ReturnType<typeof readStrea
     eventCount:
       latestStopMetadata?.eventCount ??
       latestHeartbeat?.eventCount ??
-      eventCountFromRecord(latestEventRecord) ??
+      latestEventRecord?.envelope.eventCount ??
       firstMetadata?.eventCount ??
       0,
     firstEventAt: firstEvent?.s2Timestamp.toISOString(),
@@ -1368,20 +1346,8 @@ function summaryFromStreamSnapshot(snapshot: Awaited<ReturnType<typeof readStrea
   return deriveSessionStatus(summary)
 }
 
-async function loadSessionSummary(sessionId: string) {
-  try {
-    const summary = summaryFromStreamSnapshot(await readStreamSnapshot(sessionStreamName(sessionId)))
-    if (summary) return summary
-  } catch (error) {
-    if (isS2Status(error, 404)) throw new HttpError(404, 'Session stream not found.')
-    throw error
-  }
-
-  throw new HttpError(404, 'Session stream not found.')
-}
-
-async function loadSessionSummaryByStreamName(streamName: string) {
-  if (!isCurrentSessionStreamName(streamName)) {
+async function loadSessionSummaryByStreamName(streamName: string, { validate = true }: { validate?: boolean } = {}) {
+  if (validate && !isCurrentSessionStreamName(streamName)) {
     throw new HttpError(400, 'Invalid session stream name.')
   }
 
@@ -1394,6 +1360,11 @@ async function loadSessionSummaryByStreamName(streamName: string) {
   }
 
   throw new HttpError(404, 'Session stream not found.')
+}
+
+// streamName from sessionStreamName() is always well-formed, so skip re-validation.
+function loadSessionSummary(sessionId: string) {
+  return loadSessionSummaryByStreamName(sessionStreamName(sessionId), { validate: false })
 }
 
 async function readSessionIndexTailSeqNum() {
@@ -1504,7 +1475,6 @@ app.get(
       streamPrefix: SESSION_STREAM_PREFIX,
       activeSessionLeaseMs: ACTIVE_SESSION_LEASE_MS,
       s2Status: S2_ACCESS_TOKEN && S2_BASIN ? 'error' : 'missing-config',
-      recorderScriptPath: '/recorder.js',
       s2Endpoints: {
         account: EFFECTIVE_S2_ACCOUNT_ENDPOINT,
         basin: EFFECTIVE_S2_BASIN_ENDPOINT,
