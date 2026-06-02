@@ -1,7 +1,6 @@
-import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react'
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react'
 import 'rrweb-player/dist/style.css'
 import type { eventWithTime } from '@rrweb/types'
-import type RrwebPlayerInstance from 'rrweb-player'
 import type { RRwebPlayerOptions } from 'rrweb-player'
 import type { ReplayEvent } from './shared/session'
 
@@ -10,13 +9,20 @@ interface ReplayPlayerProps {
   events: ReplayEvent[]
   live: boolean
   lastSeqNum: number
+  createPlayer?: (options: RRwebPlayerOptions) => DestroyablePlayer | Promise<DestroyablePlayer>
 }
 
 export interface ReplayPlayerHandle {
   seek: (offsetMs: number) => void
 }
 
-type DestroyablePlayer = RrwebPlayerInstance & { $destroy: () => void }
+interface DestroyablePlayer {
+  addEvent: (event: eventWithTime) => void
+  addEventListener: (event: string, handler: (payload: unknown) => void) => void
+  getReplayer: () => { on: (event: string, handler: () => void) => void }
+  goto: (offsetMs: number, play: boolean) => void
+  $destroy: () => void
+}
 const LIVE_EDGE_PROGRESS = 0.995
 type PlayerState = 'loading' | 'playing' | 'paused' | 'waiting'
 
@@ -60,7 +66,7 @@ function timelineEndOffset(events: ReplayEvent[], maxSeqNum: number) {
 }
 
 export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(function ReplayPlayer(
-  { sessionId, events, live, lastSeqNum },
+  { sessionId, events, live, lastSeqNum, createPlayer },
   ref,
 ) {
   const frameRef = useRef<HTMLDivElement | null>(null)
@@ -68,6 +74,9 @@ export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(fu
   const mountedSessionRef = useRef<string | null>(null)
   const lastAddedSeqNumRef = useRef(-1)
   const followingLiveEdgeRef = useRef(true)
+  const liveEdgeSeekTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null)
+  const progressInteractionClearTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null)
+  const progressInteractionActiveRef = useRef(false)
   const eventsRef = useRef(events)
   const [size, setSize] = useState({ width: 960, height: 540 })
   const [playerError, setPlayerError] = useState<string | null>(null)
@@ -95,10 +104,114 @@ export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(fu
       ? 'timeline advancing'
       : 'ready at final frame'
 
-  const updateFollowingLiveEdge = (nextFollowingLiveEdge: boolean) => {
+  const setFollowingLiveEdgeState = useCallback((nextFollowingLiveEdge: boolean) => {
     followingLiveEdgeRef.current = nextFollowingLiveEdge
     setFollowingLiveEdge((current) => (current === nextFollowingLiveEdge ? current : nextFollowingLiveEdge))
-  }
+  }, [])
+
+  const clearLiveEdgeSeekTimer = useCallback(() => {
+    if (liveEdgeSeekTimerRef.current === null) return
+    window.clearTimeout(liveEdgeSeekTimerRef.current)
+    liveEdgeSeekTimerRef.current = null
+  }, [])
+
+  const clearProgressInteractionTimer = useCallback(() => {
+    if (progressInteractionClearTimerRef.current === null) return
+    window.clearTimeout(progressInteractionClearTimerRef.current)
+    progressInteractionClearTimerRef.current = null
+  }, [])
+
+  const markProgressInteraction = useCallback(() => {
+    clearProgressInteractionTimer()
+    progressInteractionActiveRef.current = true
+  }, [clearProgressInteractionTimer])
+
+  const releaseProgressInteractionSoon = useCallback(() => {
+    clearProgressInteractionTimer()
+    progressInteractionClearTimerRef.current = window.setTimeout(() => {
+      progressInteractionActiveRef.current = false
+      progressInteractionClearTimerRef.current = null
+    }, 250)
+  }, [clearProgressInteractionTimer])
+
+  const seekPlayerToLiveEdge = useCallback((player: DestroyablePlayer, sourceEvents: ReplayEvent[] = eventsRef.current) => {
+    const edgeOffset = timelineEndOffset(sourceEvents, lastAddedSeqNumRef.current)
+    if (edgeOffset !== null) {
+      player.goto(edgeOffset, false)
+    }
+  }, [])
+
+  const appendNewEventsToPlayer = useCallback((player: DestroyablePlayer, sourceEvents: ReplayEvent[]) => {
+    const nextEvents = sourceEvents
+      .filter((event) => eventSeqNum(event) > lastAddedSeqNumRef.current)
+      .sort((a, b) => eventSeqNum(a) - eventSeqNum(b))
+
+    for (const event of nextEvents) {
+      player.addEvent(event as eventWithTime)
+      lastAddedSeqNumRef.current = Math.max(lastAddedSeqNumRef.current, eventSeqNum(event))
+    }
+
+    return nextEvents.length
+  }, [])
+
+  const continueBufferedPlayback = useCallback(
+    (player: DestroyablePlayer, sourceEvents: ReplayEvent[] = eventsRef.current) => {
+      const resumeOffset = timelineEndOffset(sourceEvents, lastAddedSeqNumRef.current)
+      const appendedCount = appendNewEventsToPlayer(player, sourceEvents)
+
+      if (appendedCount === 0 || resumeOffset === null) return false
+
+      const scheduledSessionId = sessionId
+      setFollowingLiveEdgeState(false)
+      void Promise.resolve().then(() => {
+        if (
+          playerRef.current !== player ||
+          mountedSessionRef.current !== scheduledSessionId ||
+          followingLiveEdgeRef.current
+        ) {
+          return
+        }
+
+        player.goto(resumeOffset, true)
+        setPlayerState('playing')
+      })
+      return true
+    },
+    [appendNewEventsToPlayer, sessionId, setFollowingLiveEdgeState],
+  )
+
+  const queueLiveEdgeSeek = useCallback(
+    (sourceEvents: ReplayEvent[]) => {
+      clearLiveEdgeSeekTimer()
+      const scheduledSessionId = sessionId
+      liveEdgeSeekTimerRef.current = window.setTimeout(() => {
+        liveEdgeSeekTimerRef.current = null
+        const player = playerRef.current
+        if (!player || mountedSessionRef.current !== scheduledSessionId || !followingLiveEdgeRef.current) return
+
+        seekPlayerToLiveEdge(player, sourceEvents)
+        setPlayerState('waiting')
+      }, 0)
+    },
+    [clearLiveEdgeSeekTimer, seekPlayerToLiveEdge, sessionId],
+  )
+
+  const leaveLiveEdge = useCallback(() => {
+    clearLiveEdgeSeekTimer()
+    setFollowingLiveEdgeState(false)
+  }, [clearLiveEdgeSeekTimer, setFollowingLiveEdgeState])
+
+  const followLiveEdge = useCallback(
+    (sourceEvents: ReplayEvent[] = eventsRef.current) => {
+      setFollowingLiveEdgeState(true)
+      const player = playerRef.current
+      if (!player || mountedSessionRef.current !== sessionId) return
+
+      appendNewEventsToPlayer(player, sourceEvents)
+      queueLiveEdgeSeek(sourceEvents)
+    },
+    [appendNewEventsToPlayer, queueLiveEdgeSeek, sessionId, setFollowingLiveEdgeState],
+  )
 
   useImperativeHandle(
     ref,
@@ -106,13 +219,12 @@ export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(fu
       seek(offsetMs: number) {
         const player = playerRef.current
         if (!player) return
-        followingLiveEdgeRef.current = false
-        setFollowingLiveEdge(false)
+        leaveLiveEdge()
         player.goto(Math.max(0, offsetMs), false)
         setPlayerState('paused')
       },
     }),
-    [],
+    [leaveLiveEdge],
   )
 
   useEffect(() => {
@@ -142,16 +254,59 @@ export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(fu
     const frame = frameRef.current
     if (!frame || !canMount) return
 
+    const progressFromEvent = (event: Event) => {
+      const progress = event.target instanceof Element ? event.target.closest('.rr-progress') : null
+      return progress instanceof HTMLElement ? progress : null
+    }
+
     const handleControllerClick = (event: MouseEvent) => {
-      if (event.target instanceof Element && event.target.closest('.rr-progress')) {
-        updateFollowingLiveEdge(false)
+      const progress = progressFromEvent(event)
+      if (!progress) return
+
+      const rect = progress.getBoundingClientRect()
+      const ratio = rect.width > 0 ? (event.clientX - rect.left) / rect.width : 0
+      if (live && ratio >= LIVE_EDGE_PROGRESS) {
+        followLiveEdge()
+      } else {
+        leaveLiveEdge()
       }
     }
 
-    frame.addEventListener('click', handleControllerClick, true)
+    const handleProgressInteractionStart = (event: Event) => {
+      if (progressFromEvent(event)) markProgressInteraction()
+    }
 
-    return () => frame.removeEventListener('click', handleControllerClick, true)
-  }, [canMount, sessionId])
+    frame.addEventListener('click', handleControllerClick, true)
+    frame.addEventListener('pointerdown', handleProgressInteractionStart, true)
+    frame.addEventListener('mousedown', handleProgressInteractionStart, true)
+    frame.addEventListener('touchstart', handleProgressInteractionStart, true)
+    window.addEventListener('pointerup', releaseProgressInteractionSoon, true)
+    window.addEventListener('mouseup', releaseProgressInteractionSoon, true)
+    window.addEventListener('touchend', releaseProgressInteractionSoon, true)
+    window.addEventListener('touchcancel', releaseProgressInteractionSoon, true)
+
+    return () => {
+      frame.removeEventListener('click', handleControllerClick, true)
+      frame.removeEventListener('pointerdown', handleProgressInteractionStart, true)
+      frame.removeEventListener('mousedown', handleProgressInteractionStart, true)
+      frame.removeEventListener('touchstart', handleProgressInteractionStart, true)
+      window.removeEventListener('pointerup', releaseProgressInteractionSoon, true)
+      window.removeEventListener('mouseup', releaseProgressInteractionSoon, true)
+      window.removeEventListener('touchend', releaseProgressInteractionSoon, true)
+      window.removeEventListener('touchcancel', releaseProgressInteractionSoon, true)
+      clearProgressInteractionTimer()
+      progressInteractionActiveRef.current = false
+    }
+  }, [
+    canMount,
+    clearProgressInteractionTimer,
+    followLiveEdge,
+    leaveLiveEdge,
+    live,
+    markProgressInteraction,
+    releaseProgressInteractionSoon,
+    sessionId,
+  ])
 
   useEffect(() => {
     const frame = frameRef.current
@@ -165,7 +320,12 @@ export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(fu
 
       try {
         setPlayerState('loading')
-        const { default: RrwebPlayer } = await import('rrweb-player')
+        const RrwebPlayer =
+          createPlayer ??
+          (async (playerOptions: RRwebPlayerOptions) => {
+            const { default: Player } = await import('rrweb-player')
+            return new Player(playerOptions) as unknown as DestroyablePlayer
+          })
 
         if (cancelled) return
         const currentEvents = eventsRef.current
@@ -179,7 +339,7 @@ export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(fu
             height: size.height,
             autoPlay: false,
             showController: true,
-            liveMode: live,
+            liveMode: false,
             speed: 1,
             speedOption: [1, 2, 4],
             maxScale: 1,
@@ -188,11 +348,15 @@ export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(fu
 
         playerRef.current?.$destroy()
         target.replaceChildren()
-        const player = new RrwebPlayer(options) as DestroyablePlayer
+        const player = await RrwebPlayer(options)
+        if (cancelled) {
+          player.$destroy()
+          return
+        }
         const handleFinish = () => {
           if (live) {
-            updateFollowingLiveEdge(true)
-            player.getReplayer().startLive(Date.now())
+            if (!followingLiveEdgeRef.current && continueBufferedPlayback(player)) return
+            followLiveEdge()
             setPlayerState('waiting')
           } else {
             setPlayerState('paused')
@@ -203,9 +367,13 @@ export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(fu
           const value = uiPayload(progress)
           if (typeof value === 'number') {
             if (!live) {
-              updateFollowingLiveEdge(value >= LIVE_EDGE_PROGRESS)
-            } else if (!followingLiveEdgeRef.current && value >= LIVE_EDGE_PROGRESS) {
-              updateFollowingLiveEdge(true)
+              setFollowingLiveEdgeState(value >= LIVE_EDGE_PROGRESS)
+            } else if (progressInteractionActiveRef.current) {
+              if (value >= LIVE_EDGE_PROGRESS) {
+                followLiveEdge()
+              } else {
+                leaveLiveEdge()
+              }
             }
           }
         })
@@ -222,9 +390,9 @@ export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(fu
         player.getReplayer().on('finish', handleFinish)
 
         if (live) {
-          updateFollowingLiveEdge(true)
+          setFollowingLiveEdgeState(true)
         } else {
-          updateFollowingLiveEdge(false)
+          setFollowingLiveEdgeState(false)
         }
 
         playerRef.current = player
@@ -233,11 +401,7 @@ export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(fu
         setPlayerError(null)
 
         if (live) {
-          const edgeOffset = timelineEndOffset(currentEvents, lastAddedSeqNumRef.current)
-          if (edgeOffset !== null) {
-            player.goto(edgeOffset, false)
-          }
-          player.getReplayer().startLive(Date.now())
+          seekPlayerToLiveEdge(player, currentEvents)
           setPlayerState('waiting')
         } else {
           const endOffset = timelineEndOffset(currentEvents, lastAddedSeqNumRef.current)
@@ -257,33 +421,42 @@ export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(fu
 
     return () => {
       cancelled = true
+      clearLiveEdgeSeekTimer()
+      clearProgressInteractionTimer()
+      progressInteractionActiveRef.current = false
       playerRef.current?.$destroy()
       playerRef.current = null
       mountedSessionRef.current = null
       lastAddedSeqNumRef.current = -1
       setPlayerState('loading')
     }
-  }, [canMount, live, sessionId, size.height, size.width])
+  }, [
+    canMount,
+    clearLiveEdgeSeekTimer,
+    clearProgressInteractionTimer,
+    continueBufferedPlayback,
+    createPlayer,
+    followLiveEdge,
+    leaveLiveEdge,
+    live,
+    seekPlayerToLiveEdge,
+    sessionId,
+    setFollowingLiveEdgeState,
+    size.height,
+    size.width,
+  ])
 
   useEffect(() => {
     const player = playerRef.current
     if (!player || mountedSessionRef.current !== sessionId) return
 
-    const nextEvents = events
-      .filter((event) => eventSeqNum(event) > lastAddedSeqNumRef.current)
-      .sort((a, b) => eventSeqNum(a) - eventSeqNum(b))
+    if (live && !followingLiveEdgeRef.current) return
 
-    const wasFollowingLiveEdge = live && followingLiveEdgeRef.current
-
-    for (const event of nextEvents) {
-      player.addEvent(event as eventWithTime)
-      lastAddedSeqNumRef.current = Math.max(lastAddedSeqNumRef.current, eventSeqNum(event))
+    const appendedCount = appendNewEventsToPlayer(player, events)
+    if (appendedCount > 0 && live && followingLiveEdgeRef.current) {
+      queueLiveEdgeSeek(events)
     }
-
-    if (nextEvents.length > 0 && wasFollowingLiveEdge) {
-      setPlayerState('waiting')
-    }
-  }, [events, live, sessionId])
+  }, [appendNewEventsToPlayer, events, live, queueLiveEdgeSeek, sessionId])
 
   if (events.length < 2) {
     return (
