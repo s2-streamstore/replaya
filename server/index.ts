@@ -61,7 +61,8 @@ const DELETE_ON_EMPTY_MIN_AGE_SECS = 60 * 60 * 24
 const RETENTION_AGE_SECS = 60 * 60 * 24 * 28
 const ACTIVE_SESSION_LEASE_MS = Number(process.env.REPLAYA_ACTIVE_SESSION_LEASE_MS ?? 45_000)
 const EVENT_CHUNK_BYTES = 512 * 1024
-const RECORD_ENVELOPE_HEADER = 'replaya-envelope'
+const RECORD_KIND_HEADER = 'kind'
+const RECORD_ENVELOPE_HEADER = 'envelope'
 const INGEST_AUTH_REQUIRED = parseBooleanEnv(process.env.REPLAYA_INGEST_AUTH_REQUIRED, IS_PRODUCTION)
 const PROJECT_KEYS = splitConfigList(process.env.REPLAYA_PROJECT_KEYS ?? process.env.REPLAYA_PROJECT_KEY)
 const INGEST_AUTH_ENABLED = INGEST_AUTH_REQUIRED || PROJECT_KEYS.length > 0
@@ -560,18 +561,30 @@ function bytesHeader(name: string, value: string): readonly [Uint8Array, Uint8Ar
   return [utf8Bytes(name), utf8Bytes(value)]
 }
 
+function kindHeader(kind: StoredSessionRecord['kind']) {
+  return bytesHeader(RECORD_KIND_HEADER, kind)
+}
+
 function isChunkWriteRecord(record: StoredWriteRecord): record is EventChunkEnvelope & { body: Uint8Array } {
   return record.kind === 'event-chunk'
 }
 
-function envelopeFromBytesHeader(headers: ReadonlyArray<readonly [Uint8Array, Uint8Array]>) {
+function headerValue(headers: ReadonlyArray<readonly [Uint8Array, Uint8Array]>, headerName: string) {
   for (const [name, value] of headers) {
-    if (utf8String(name) === RECORD_ENVELOPE_HEADER) {
-      return parseStoredRecord(utf8String(value))
-    }
+    if (utf8String(name) === headerName) return utf8String(value)
   }
 
   return null
+}
+
+function recordKindFromHeader(headers: ReadonlyArray<readonly [Uint8Array, Uint8Array]>) {
+  const kind = headerValue(headers, RECORD_KIND_HEADER)
+  return kind === 'metadata' || kind === 'heartbeat' || kind === 'event' || kind === 'event-chunk' ? kind : null
+}
+
+function envelopeFromBytesHeader(headers: ReadonlyArray<readonly [Uint8Array, Uint8Array]>) {
+  const envelope = headerValue(headers, RECORD_ENVELOPE_HEADER)
+  return envelope === null ? null : parseStoredRecord(envelope)
 }
 
 function isS2Status(error: unknown, status: number) {
@@ -608,13 +621,14 @@ function toAppendRecords(records: StoredWriteRecord[]) {
       const { body, ...envelope } = record
       return AppendRecord.bytes({
         body,
-        headers: [bytesHeader(RECORD_ENVELOPE_HEADER, JSON.stringify(envelope))],
+        headers: [kindHeader(envelope.kind), bytesHeader(RECORD_ENVELOPE_HEADER, JSON.stringify(envelope))],
         timestamp: timestampFromEnvelope(envelope),
       })
     }
 
     return AppendRecord.bytes({
       body: jsonBytes(record),
+      headers: [kindHeader(record.kind)],
       timestamp: timestampFromEnvelope(record),
     })
   })
@@ -672,8 +686,11 @@ interface StoredReadRecord {
 type EventChunkReadRecord = StoredReadRecord & { envelope: EventChunkEnvelope; body: Uint8Array }
 
 function storedReadRecordFromS2(record: S2ReadRecord<'bytes'>): StoredReadRecord | null {
-  const parsed = envelopeFromBytesHeader(record.headers) ?? parseStoredRecord(utf8String(record.body))
-  if (!parsed) return null
+  const kind = recordKindFromHeader(record.headers)
+  if (kind === null) return null
+
+  const parsed = kind === 'event-chunk' ? envelopeFromBytesHeader(record.headers) : parseStoredRecord(utf8String(record.body))
+  if (!parsed || parsed.kind !== kind) return null
 
   const readRecord: StoredReadRecord = {
     seqNum: record.seqNum,
