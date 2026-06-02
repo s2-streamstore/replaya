@@ -708,6 +708,19 @@ interface ChunkAssemblyGroup {
   updatedAtMs: number
 }
 
+function logChunkAssemblyFailure(
+  completedBy: StoredReadRecord & { envelope: Extract<StoredSessionRecord, { kind: 'event-chunk' }> },
+  error: unknown,
+) {
+  console.error('[replaya] unable to assemble event chunks', {
+    sessionId: completedBy.envelope.sessionId,
+    chunkId: completedBy.envelope.chunkId,
+    chunkCount: completedBy.envelope.chunkCount,
+    seqNum: completedBy.seqNum,
+    error: error instanceof Error ? error.message : String(error),
+  })
+}
+
 function assembleChunkGroup(
   group: ChunkAssemblyGroup,
   completedBy: StoredReadRecord & { envelope: Extract<StoredSessionRecord, { kind: 'event-chunk' }> },
@@ -726,7 +739,10 @@ function assembleChunkGroup(
       orderedChunks.map((chunk) => Buffer.from(chunk.envelope.data, 'base64url')),
     ).toString('utf8')
     const event = JSON.parse(eventJson) as unknown
-    if (!isObject(event)) return null
+    if (!isObject(event)) {
+      logChunkAssemblyFailure(completedBy, 'assembled event was not a JSON object')
+      return null
+    }
 
     return {
       seqNum: completedBy.seqNum,
@@ -739,7 +755,8 @@ function assembleChunkGroup(
         eventCount: completedBy.envelope.eventCount,
       },
     } satisfies StoredReadRecord
-  } catch {
+  } catch (error) {
+    logChunkAssemblyFailure(completedBy, error)
     return null
   }
 }

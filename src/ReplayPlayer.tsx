@@ -75,6 +75,8 @@ export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(fu
   const lastAddedSeqNumRef = useRef(-1)
   const followingLiveEdgeRef = useRef(true)
   const liveEdgeSeekTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null)
+  const progressInteractionClearTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null)
+  const progressInteractionActiveRef = useRef(false)
   const eventsRef = useRef(events)
   const [size, setSize] = useState({ width: 960, height: 540 })
   const [playerError, setPlayerError] = useState<string | null>(null)
@@ -112,6 +114,25 @@ export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(fu
     window.clearTimeout(liveEdgeSeekTimerRef.current)
     liveEdgeSeekTimerRef.current = null
   }, [])
+
+  const clearProgressInteractionTimer = useCallback(() => {
+    if (progressInteractionClearTimerRef.current === null) return
+    window.clearTimeout(progressInteractionClearTimerRef.current)
+    progressInteractionClearTimerRef.current = null
+  }, [])
+
+  const markProgressInteraction = useCallback(() => {
+    clearProgressInteractionTimer()
+    progressInteractionActiveRef.current = true
+  }, [clearProgressInteractionTimer])
+
+  const releaseProgressInteractionSoon = useCallback(() => {
+    clearProgressInteractionTimer()
+    progressInteractionClearTimerRef.current = window.setTimeout(() => {
+      progressInteractionActiveRef.current = false
+      progressInteractionClearTimerRef.current = null
+    }, 250)
+  }, [clearProgressInteractionTimer])
 
   const seekPlayerToLiveEdge = useCallback((player: DestroyablePlayer, sourceEvents: ReplayEvent[] = eventsRef.current) => {
     const edgeOffset = timelineEndOffset(sourceEvents, lastAddedSeqNumRef.current)
@@ -222,9 +243,14 @@ export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(fu
     const frame = frameRef.current
     if (!frame || !canMount) return
 
-    const handleControllerClick = (event: MouseEvent) => {
+    const progressFromEvent = (event: Event) => {
       const progress = event.target instanceof Element ? event.target.closest('.rr-progress') : null
-      if (!(progress instanceof HTMLElement)) return
+      return progress instanceof HTMLElement ? progress : null
+    }
+
+    const handleControllerClick = (event: MouseEvent) => {
+      const progress = progressFromEvent(event)
+      if (!progress) return
 
       const rect = progress.getBoundingClientRect()
       const ratio = rect.width > 0 ? (event.clientX - rect.left) / rect.width : 0
@@ -235,10 +261,41 @@ export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(fu
       }
     }
 
-    frame.addEventListener('click', handleControllerClick, true)
+    const handleProgressInteractionStart = (event: Event) => {
+      if (progressFromEvent(event)) markProgressInteraction()
+    }
 
-    return () => frame.removeEventListener('click', handleControllerClick, true)
-  }, [canMount, followLiveEdge, leaveLiveEdge, live, sessionId])
+    frame.addEventListener('click', handleControllerClick, true)
+    frame.addEventListener('pointerdown', handleProgressInteractionStart, true)
+    frame.addEventListener('mousedown', handleProgressInteractionStart, true)
+    frame.addEventListener('touchstart', handleProgressInteractionStart, true)
+    window.addEventListener('pointerup', releaseProgressInteractionSoon, true)
+    window.addEventListener('mouseup', releaseProgressInteractionSoon, true)
+    window.addEventListener('touchend', releaseProgressInteractionSoon, true)
+    window.addEventListener('touchcancel', releaseProgressInteractionSoon, true)
+
+    return () => {
+      frame.removeEventListener('click', handleControllerClick, true)
+      frame.removeEventListener('pointerdown', handleProgressInteractionStart, true)
+      frame.removeEventListener('mousedown', handleProgressInteractionStart, true)
+      frame.removeEventListener('touchstart', handleProgressInteractionStart, true)
+      window.removeEventListener('pointerup', releaseProgressInteractionSoon, true)
+      window.removeEventListener('mouseup', releaseProgressInteractionSoon, true)
+      window.removeEventListener('touchend', releaseProgressInteractionSoon, true)
+      window.removeEventListener('touchcancel', releaseProgressInteractionSoon, true)
+      clearProgressInteractionTimer()
+      progressInteractionActiveRef.current = false
+    }
+  }, [
+    canMount,
+    clearProgressInteractionTimer,
+    followLiveEdge,
+    leaveLiveEdge,
+    live,
+    markProgressInteraction,
+    releaseProgressInteractionSoon,
+    sessionId,
+  ])
 
   useEffect(() => {
     const frame = frameRef.current
@@ -300,6 +357,12 @@ export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(fu
           if (typeof value === 'number') {
             if (!live) {
               setFollowingLiveEdgeState(value >= LIVE_EDGE_PROGRESS)
+            } else if (progressInteractionActiveRef.current) {
+              if (value >= LIVE_EDGE_PROGRESS) {
+                followLiveEdge()
+              } else {
+                leaveLiveEdge()
+              }
             }
           }
         })
@@ -348,6 +411,8 @@ export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(fu
     return () => {
       cancelled = true
       clearLiveEdgeSeekTimer()
+      clearProgressInteractionTimer()
+      progressInteractionActiveRef.current = false
       playerRef.current?.$destroy()
       playerRef.current = null
       mountedSessionRef.current = null
@@ -357,9 +422,11 @@ export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(fu
   }, [
     canMount,
     clearLiveEdgeSeekTimer,
+    clearProgressInteractionTimer,
     continueBufferedPlayback,
     createPlayer,
     followLiveEdge,
+    leaveLiveEdge,
     live,
     seekPlayerToLiveEdge,
     sessionId,

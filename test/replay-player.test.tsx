@@ -27,11 +27,33 @@ class MockRrwebPlayer {
 
   constructor(options: unknown) {
     this.options = options
+    const target = (options as { target?: HTMLElement }).target
+    if (target) {
+      const progress = document.createElement('div')
+      progress.className = 'rr-progress'
+      progress.getBoundingClientRect = () =>
+        ({
+          left: 0,
+          right: 100,
+          top: 0,
+          bottom: 10,
+          width: 100,
+          height: 10,
+          x: 0,
+          y: 0,
+          toJSON: () => ({}),
+        }) as DOMRect
+      target.append(progress)
+    }
     MockRrwebPlayer.instances.push(this)
   }
 
   finish() {
     this.replayerListeners.get('finish')?.()
+  }
+
+  updateProgress(value: number) {
+    this.listeners.get('ui-update-progress')?.({ payload: value })
   }
 }
 
@@ -43,6 +65,7 @@ interface ReplayPlayerTestProps {
 }
 
 interface RrwebPlayerOptions {
+  target: HTMLElement
   props: {
     events: ReplayEvent[]
     liveMode: boolean
@@ -71,6 +94,12 @@ function playerShell(container: HTMLElement) {
   const shell = container.querySelector('.replay-player-shell')
   expect(shell).toBeInstanceOf(HTMLElement)
   return shell as HTMLElement
+}
+
+function progressBar(container: HTMLElement) {
+  const progress = container.querySelector('.rr-progress')
+  expect(progress).toBeInstanceOf(HTMLElement)
+  return progress as HTMLElement
 }
 
 async function flushReact() {
@@ -190,5 +219,31 @@ describe('ReplayPlayer active-session playback', () => {
     expect(player.goto).toHaveBeenCalledWith(100, true)
     expect(playerShell(container).dataset.followingLiveEdge).toBe('false')
     expect(playerShell(container).dataset.playerState).toBe('playing')
+  })
+
+  it('re-enters live mode when a live-session scrub reaches the far right', async () => {
+    const events = [replayEvent(0, 1_000), replayEvent(1, 1_100)]
+    const { container, player, ref } = await mountReplayPlayer({
+      sessionId: 'session-live',
+      events,
+      live: true,
+      lastSeqNum: 1,
+    })
+
+    await act(async () => {
+      ref.current?.seek(50)
+    })
+    expect(playerShell(container).dataset.followingLiveEdge).toBe('false')
+
+    await act(async () => {
+      player.updateProgress(1)
+    })
+    expect(playerShell(container).dataset.followingLiveEdge).toBe('false')
+
+    await act(async () => {
+      progressBar(container).dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: 100 }))
+      player.updateProgress(1)
+    })
+    expect(playerShell(container).dataset.followingLiveEdge).toBe('true')
   })
 })
