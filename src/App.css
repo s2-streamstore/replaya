@@ -822,11 +822,13 @@
   background: var(--border);
 }
 
-.activity-item:first-child::before {
+/* Cap the rail at the first/last node. Each .activity-item is the only child of
+   its <li>, so :first/:last-child must be matched on the <li>, not the button. */
+.activity-list li:first-child .activity-item::before {
   top: 50%;
 }
 
-.activity-item:last-child::before {
+.activity-list li:last-child .activity-item::before {
   bottom: 50%;
 }
 
