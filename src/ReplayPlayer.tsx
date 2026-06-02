@@ -26,6 +26,30 @@ interface DestroyablePlayer {
 const LIVE_EDGE_PROGRESS = 0.995
 type PlayerState = 'loading' | 'playing' | 'paused' | 'waiting'
 
+function describePlaybackStatus(
+  live: boolean,
+  followingLiveEdge: boolean,
+  playerState: PlayerState,
+  lastSeqNum: number,
+): { label: string; detail: string } {
+  if (live && followingLiveEdge) {
+    return { label: 'Live tail', detail: `stream seq ${lastSeqNum}` }
+  }
+
+  if (live) {
+    return {
+      label: playerState === 'playing' ? 'Playing history' : 'Reviewing history',
+      detail: `new records continue after seq ${lastSeqNum}`,
+    }
+  }
+
+  return {
+    label:
+      playerState === 'playing' ? 'Playing replay' : playerState === 'loading' ? 'Loading replay' : 'Paused',
+    detail: playerState === 'playing' ? 'timeline advancing' : 'ready at final frame',
+  }
+}
+
 function uiPayload(value: unknown) {
   if (typeof value === 'object' && value !== null && 'payload' in value) {
     return (value as { payload: unknown }).payload
@@ -84,25 +108,12 @@ export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(fu
   const [followingLiveEdge, setFollowingLiveEdge] = useState(live)
   const canMount = events.length >= 2
   const liveModeClass = live ? (followingLiveEdge ? 'following' : 'reviewing') : 'snapshot'
-  const statusLabel =
-    live && followingLiveEdge
-      ? 'Live tail'
-      : live
-        ? playerState === 'playing'
-          ? 'Playing history'
-          : 'Reviewing history'
-        : playerState === 'playing'
-          ? 'Playing replay'
-        : playerState === 'loading'
-          ? 'Loading replay'
-          : 'Paused'
-  const statusDetail = live
-    ? followingLiveEdge
-      ? `stream seq ${lastSeqNum}`
-      : `new records continue after seq ${lastSeqNum}`
-    : playerState === 'playing'
-      ? 'timeline advancing'
-      : 'ready at final frame'
+  const { label: statusLabel, detail: statusDetail } = describePlaybackStatus(
+    live,
+    followingLiveEdge,
+    playerState,
+    lastSeqNum,
+  )
 
   const setFollowingLiveEdgeState = useCallback((nextFollowingLiveEdge: boolean) => {
     followingLiveEdgeRef.current = nextFollowingLiveEdge
