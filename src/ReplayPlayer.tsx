@@ -1,7 +1,6 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react'
 import 'rrweb-player/dist/style.css'
 import type { eventWithTime } from '@rrweb/types'
-import type RrwebPlayerInstance from 'rrweb-player'
 import type { RRwebPlayerOptions } from 'rrweb-player'
 import type { ReplayEvent } from './shared/session'
 
@@ -10,13 +9,20 @@ interface ReplayPlayerProps {
   events: ReplayEvent[]
   live: boolean
   lastSeqNum: number
+  createPlayer?: (options: RRwebPlayerOptions) => DestroyablePlayer | Promise<DestroyablePlayer>
 }
 
 export interface ReplayPlayerHandle {
   seek: (offsetMs: number) => void
 }
 
-type DestroyablePlayer = RrwebPlayerInstance & { $destroy: () => void }
+interface DestroyablePlayer {
+  addEvent: (event: eventWithTime) => void
+  addEventListener: (event: string, handler: (payload: unknown) => void) => void
+  getReplayer: () => { on: (event: string, handler: () => void) => void }
+  goto: (offsetMs: number, play: boolean) => void
+  $destroy: () => void
+}
 const LIVE_EDGE_PROGRESS = 0.995
 type PlayerState = 'loading' | 'playing' | 'paused' | 'waiting'
 
@@ -60,7 +66,7 @@ function timelineEndOffset(events: ReplayEvent[], maxSeqNum: number) {
 }
 
 export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(function ReplayPlayer(
-  { sessionId, events, live, lastSeqNum },
+  { sessionId, events, live, lastSeqNum, createPlayer },
   ref,
 ) {
   const frameRef = useRef<HTMLDivElement | null>(null)
@@ -246,7 +252,12 @@ export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(fu
 
       try {
         setPlayerState('loading')
-        const { default: RrwebPlayer } = await import('rrweb-player')
+        const RrwebPlayer =
+          createPlayer ??
+          (async (playerOptions: RRwebPlayerOptions) => {
+            const { default: Player } = await import('rrweb-player')
+            return new Player(playerOptions) as unknown as DestroyablePlayer
+          })
 
         if (cancelled) return
         const currentEvents = eventsRef.current
@@ -269,7 +280,11 @@ export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(fu
 
         playerRef.current?.$destroy()
         target.replaceChildren()
-        const player = new RrwebPlayer(options) as DestroyablePlayer
+        const player = await RrwebPlayer(options)
+        if (cancelled) {
+          player.$destroy()
+          return
+        }
         const handleFinish = () => {
           if (live) {
             if (!followingLiveEdgeRef.current && continueBufferedPlayback(player)) return
@@ -343,6 +358,7 @@ export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(fu
     canMount,
     clearLiveEdgeSeekTimer,
     continueBufferedPlayback,
+    createPlayer,
     followLiveEdge,
     live,
     seekPlayerToLiveEdge,

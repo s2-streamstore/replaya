@@ -586,12 +586,8 @@ function timestampFromEnvelope(envelope: StoredSessionRecord) {
     return Number.isFinite(timestamp) ? timestamp : 0
   }
 
-  if (
-    envelope.kind === 'event' &&
-    typeof envelope.event.timestamp === 'number' &&
-    Number.isFinite(envelope.event.timestamp)
-  ) {
-    return envelope.event.timestamp
+  if (envelope.kind === 'event') {
+    return timestampFromReplayEvent(envelope.event)
   }
 
   if (
@@ -600,6 +596,14 @@ function timestampFromEnvelope(envelope: StoredSessionRecord) {
     Number.isFinite(envelope.eventTimestamp)
   ) {
     return envelope.eventTimestamp
+  }
+
+  throw new HttpError(400, 'Session event records must include a valid timestamp.')
+}
+
+function timestampFromReplayEvent(event: ReplayEvent) {
+  if (typeof event.timestamp === 'number' && Number.isFinite(event.timestamp)) {
+    return event.timestamp
   }
 
   throw new HttpError(400, 'Session event records must include a valid timestamp.')
@@ -673,13 +677,7 @@ function storedRecordsForEvent(
     ]
   }
 
-  const eventTimestamp = timestampFromEnvelope({
-    kind: 'event',
-    sessionId,
-    capturedAt,
-    event,
-    eventCount,
-  })
+  const eventTimestamp = timestampFromReplayEvent(event)
   const chunkId = randomUUID()
   const chunkCount = Math.ceil(eventBytes.length / EVENT_CHUNK_BYTES)
   const chunks: StoredSessionRecord[] = []
