@@ -383,6 +383,20 @@ ${initOptions.join(',\n')}
     let active = true
     const source = new EventSource(api.liveSessionUrl(selectedId, currentSelection.recordCount))
 
+    const patchSessionList = (
+      sessionId: string,
+      merge: (session: SessionSummary) => SessionSummary,
+      when: (session: SessionSummary) => boolean = () => true,
+    ) => {
+      setSessions((currentSessions) =>
+        sortSessions(
+          currentSessions.map((session) =>
+            session.id === sessionId && when(session) ? merge(session) : session,
+          ),
+        ),
+      )
+    }
+
     const applyLiveEvent = (message: Extract<LiveSessionMessage, { type: 'event' }>) => {
       setSelected((current) => {
         if (!current || current.id !== message.sessionId) return current
@@ -403,14 +417,10 @@ ${initOptions.join(',\n')}
         }
       })
 
-      setSessions((currentSessions) =>
-        sortSessions(
-          currentSessions.map((session) =>
-            session.id === message.sessionId && message.seqNum > session.lastSeqNum
-              ? mergeLiveEventIntoSummary(session, message)
-              : session,
-          ),
-        ),
+      patchSessionList(
+        message.sessionId,
+        (session) => mergeLiveEventIntoSummary(session, message),
+        (session) => message.seqNum > session.lastSeqNum,
       )
     }
 
@@ -425,14 +435,10 @@ ${initOptions.join(',\n')}
         }
       })
 
-      setSessions((currentSessions) =>
-        sortSessions(
-          currentSessions.map((session) =>
-            session.id === message.sessionId && message.seqNum > session.lastSeqNum
-              ? mergeLiveMetadataIntoSummary(session, message)
-              : session,
-          ),
-        ),
+      patchSessionList(
+        message.sessionId,
+        (session) => mergeLiveMetadataIntoSummary(session, message),
+        (session) => message.seqNum > session.lastSeqNum,
       )
     }
 
@@ -446,14 +452,10 @@ ${initOptions.join(',\n')}
         }
       })
 
-      setSessions((currentSessions) =>
-        sortSessions(
-          currentSessions.map((session) =>
-            session.id === message.sessionId && message.seqNum > session.lastSeqNum
-              ? mergeLiveHeartbeatIntoSummary(session, message)
-              : session,
-          ),
-        ),
+      patchSessionList(
+        message.sessionId,
+        (session) => mergeLiveHeartbeatIntoSummary(session, message),
+        (session) => message.seqNum > session.lastSeqNum,
       )
     }
 
@@ -467,13 +469,7 @@ ${initOptions.join(',\n')}
         }
       })
 
-      setSessions((currentSessions) =>
-        sortSessions(
-          currentSessions.map((session) =>
-            session.id === message.sessionId ? mergeLiveStatusIntoSummary(session, message) : session,
-          ),
-        ),
-      )
+      patchSessionList(message.sessionId, (session) => mergeLiveStatusIntoSummary(session, message))
     }
 
     const handleMessage = (event: MessageEvent<string>) => {
