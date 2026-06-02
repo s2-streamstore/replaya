@@ -909,22 +909,12 @@ function assembleChunkedEvents(records: StoredReadRecord[]) {
   }
 }
 
-async function appendStoredRecords(sessionId: string, records: StoredWriteRecord[]) {
-  return appendRecordsToStream(sessionStreamName(sessionId), toAppendRecords(records), {
-    fencingToken: ACTIVE_FENCE_TOKEN,
-  })
-}
-
-async function appendStoredRecordsDirect(
+async function appendStoredRecords(
   sessionId: string,
   records: StoredWriteRecord[],
-  options?: { fencingToken?: string; matchSeqNum?: number },
+  options: { fencingToken?: string; matchSeqNum?: number; useProducer?: boolean } = {},
 ) {
-  return appendRecordsToStream(sessionStreamName(sessionId), toAppendRecords(records), {
-    fencingToken: options?.fencingToken,
-    matchSeqNum: options?.matchSeqNum,
-    useProducer: false,
-  })
+  return appendRecordsToStream(sessionStreamName(sessionId), toAppendRecords(records), options)
 }
 
 async function appendRecordsToStream(
@@ -1463,6 +1453,16 @@ function writeSseComment(response: Response, comment: string) {
   response.write(`: ${comment}\n\n`)
 }
 
+function initSseResponse(request: Request, response: Response) {
+  request.socket.setTimeout(0)
+  response.status(200)
+  response.setHeader('Content-Type', 'text/event-stream')
+  response.setHeader('Cache-Control', 'no-cache, no-transform')
+  response.setHeader('Connection', 'keep-alive')
+  response.setHeader('X-Accel-Buffering', 'no')
+  response.flushHeaders()
+}
+
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -1551,7 +1551,7 @@ app.post(
       sdk: typeof body.sdk === 'string' ? body.sdk.slice(0, 80) : undefined,
     }
 
-    const result = await appendRecordsToStream(
+    await appendRecordsToStream(
       sessionStreamName(id),
       [
         AppendRecord.fence(ACTIVE_FENCE_TOKEN, new Date(now)),
@@ -1566,7 +1566,6 @@ app.post(
       ],
       { useProducer: false },
     )
-    void result
     appendSessionIndexRecordBestEffort(id)
 
     const appendToken = createAppendToken(id)
@@ -1599,13 +1598,7 @@ app.get(
       if (!response.writableEnded) response.end()
     }
 
-    request.socket.setTimeout(0)
-    response.status(200)
-    response.setHeader('Content-Type', 'text/event-stream')
-    response.setHeader('Cache-Control', 'no-cache, no-transform')
-    response.setHeader('Connection', 'keep-alive')
-    response.setHeader('X-Accel-Buffering', 'no')
-    response.flushHeaders()
+    initSseResponse(request, response)
 
     request.on('close', close)
 
@@ -1742,13 +1735,7 @@ app.get(
       )
     }
 
-    request.socket.setTimeout(0)
-    response.status(200)
-    response.setHeader('Content-Type', 'text/event-stream')
-    response.setHeader('Cache-Control', 'no-cache, no-transform')
-    response.setHeader('Connection', 'keep-alive')
-    response.setHeader('X-Accel-Buffering', 'no')
-    response.flushHeaders()
+    initSseResponse(request, response)
 
     request.on('close', () => {
       closed = true
@@ -1914,7 +1901,7 @@ app.post(
 
     let result
     try {
-      result = await appendStoredRecords(sessionId, records)
+      result = await appendStoredRecords(sessionId, records, { fencingToken: ACTIVE_FENCE_TOKEN })
     } catch (error) {
       if (!(error instanceof FencingTokenMismatchError)) throw error
       result = { appended: 0, tailSeqNum: null }
@@ -1945,7 +1932,7 @@ app.post(
     const now = new Date().toISOString()
     let result
     try {
-      result = await appendStoredRecordsDirect(
+      result = await appendStoredRecords(
         sessionId,
         [
           {
@@ -1956,7 +1943,7 @@ app.post(
             eventCount,
           },
         ],
-        { fencingToken: ACTIVE_FENCE_TOKEN },
+        { fencingToken: ACTIVE_FENCE_TOKEN, useProducer: false },
       )
     } catch (error) {
       if (!(error instanceof FencingTokenMismatchError)) throw error
@@ -2002,7 +1989,7 @@ app.post(
     }
 
     try {
-      const result = await appendRecordsToStream(
+      await appendRecordsToStream(
         sessionStreamName(sessionId),
         [
           AppendRecord.fence(STOPPED_FENCE_TOKEN, new Date(now)),
@@ -2020,7 +2007,6 @@ app.post(
           useProducer: false,
         },
       )
-      void result
     } catch (error) {
       if (!(error instanceof FencingTokenMismatchError)) throw error
     }
