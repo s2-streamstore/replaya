@@ -13,8 +13,16 @@ class MockRrwebPlayer {
   options: unknown
   listeners = new Map<string, Handler>()
   replayerListeners = new Map<string, Handler>()
-  addEvent = vi.fn()
-  goto = vi.fn()
+  appliedEvents: unknown[] = []
+  gotoAppliedEventCounts: number[] = []
+  addEvent = vi.fn((event: unknown) => {
+    void Promise.resolve().then(() => {
+      this.appliedEvents.push(event)
+    })
+  })
+  goto = vi.fn(() => {
+    this.gotoAppliedEventCounts.push(this.appliedEvents.length)
+  })
   $destroy = vi.fn()
   addEventListener = vi.fn((event: string, handler: Handler) => {
     this.listeners.set(event, handler)
@@ -213,10 +221,12 @@ describe('ReplayPlayer active-session playback', () => {
     await act(async () => {
       player.finish()
     })
+    await flushReact()
 
     expect(player.addEvent).toHaveBeenNthCalledWith(1, bufferedEvents[0])
     expect(player.addEvent).toHaveBeenNthCalledWith(2, bufferedEvents[1])
     expect(player.goto).toHaveBeenCalledWith(100, true)
+    expect(player.gotoAppliedEventCounts.at(-1)).toBe(bufferedEvents.length)
     expect(playerShell(container).dataset.followingLiveEdge).toBe('false')
     expect(playerShell(container).dataset.playerState).toBe('playing')
   })

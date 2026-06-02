@@ -161,12 +161,24 @@ export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(fu
 
       if (appendedCount === 0 || resumeOffset === null) return false
 
+      const scheduledSessionId = sessionId
       setFollowingLiveEdgeState(false)
-      player.goto(resumeOffset, true)
       setPlayerState('playing')
+      void Promise.resolve().then(() => {
+        if (
+          playerRef.current !== player ||
+          mountedSessionRef.current !== scheduledSessionId ||
+          followingLiveEdgeRef.current
+        ) {
+          return
+        }
+
+        player.goto(resumeOffset, true)
+        setPlayerState('playing')
+      })
       return true
     },
-    [appendNewEventsToPlayer, setFollowingLiveEdgeState],
+    [appendNewEventsToPlayer, sessionId, setFollowingLiveEdgeState],
   )
 
   const queueLiveEdgeSeek = useCallback(
