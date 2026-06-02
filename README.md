@@ -14,45 +14,7 @@ Self-hosted session replay built on [S2](https://s2.dev/). Each session is store
 
 <p align="center"><em>A new session appears in the list and is live-tailed from its S2 stream — the replay and activity feed update as the visitor uses the app. (<a href="docs/demo.mp4">MP4</a>)</em></p>
 
-## How it works on S2
-
-A session recording is a log: an append-only, ordered, timestamped sequence of events. RePlaya stores each session as one S2 stream and reads it back the same way, so a single primitive covers what's often split across several systems.
-
-- **Storage.** rrweb events are appended to the tail of the session's stream over the S2 Producer API, which batches with backpressure and acks each batch once it's durable. The stream is the recording — there's no separate blob store, and nothing buffers on the server between ingest and storage. Large rrweb events are framed across multiple S2 records and reconstructed on read.
-- **Timeline.** Session streams use `timestamping.mode: client-require`, so the rrweb capture time is written into each event record's S2 timestamp and read back as the scrub timeline. (Create, stop, and heartbeat records use server wall-clock time.)
-- **Listing.** S2 lists streams in lexicographic order, so each stream is named by an inverted timestamp; `streams.list({ prefix: "sessions/" })` then returns newest-first with `startAfter` paging — no database keeping an order in sync. A best-effort sidecar index stream is tailed to update the list as new sessions start.
-- **Live tail.** `GET /api/sessions/:id/live` opens an S2 read session from the snapshot tail and bridges new records to the browser over SSE, where they're appended to the mounted player. The same stream serves both the historical scrub and the live edge.
-- **Concurrency.** Stream creation and stop write `active` / `stopped` fencing tokens; event and heartbeat appends are fenced on `active`, so a finished session can't be resurrected by a late writer.
-
-Streams are created on first append (`createStreamOnAppend`), inheriting the basin's default config, so there's no stream provisioning to manage. That leaves one external dependency: point RePlaya at [S2 Cloud](https://s2.dev/), or at a self-hosted [s2-lite](https://github.com/s2-streamstore/s2#s2-lite) to keep everything in your own infrastructure. Recordings live in your own basin — URI-addressable, with configurable retention and on-demand deletion. The browser never receives the S2 token; all S2 reads and writes go through the RePlaya server.
-
-For comparison with a typical session-replay backend:
-
-| | Typical replay backend | RePlaya |
-| --- | --- | --- |
-| Services to run | Message bus, analytics store, relational DB, object store, search index | One Node server + S2 |
-| Live sessions | Usually playback after an ingest/flush delay | Live tail of active sessions, off the same stream |
-| Stored recording | Blobs in object storage; metadata across databases | One ordered S2 stream per session |
-| Self-host footprint | A multi-service cluster, often on Kubernetes | A single process + S2 (or self-hosted s2-lite) |
-
-Dashboard search is a client-side filter over the sessions already listed — S2 provides ordering and newest-first listing, not full-text search. See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the full design.
-
 ## Quickstart
-
-```bash
-pnpm install
-pnpm dev
-```
-
-The API runs on `http://localhost:8787` and Vite serves the app on `http://localhost:5173`.
-
-For a production-style local run, build and serve everything from Express on one port:
-
-```bash
-pnpm build
-pnpm start
-# open http://localhost:8787
-```
 
 You'll need an S2 access token and a basin. Put them in `.env.local`:
 
@@ -68,6 +30,23 @@ The basin is created on first use with RePlaya's stream defaults. The dashboard'
 ```bash
 S2_ACCOUNT_ENDPOINT=http://localhost:7070
 S2_BASIN_ENDPOINT=http://localhost:7070
+```
+
+Then install dependencies and start the dev server:
+
+```bash
+pnpm install
+pnpm dev
+```
+
+The API runs on `http://localhost:8787` and Vite serves the dashboard on `http://localhost:5173`. To create a test recording without instrumenting another app, open `http://localhost:8787/recorder-test`; it records through the same hosted recorder script.
+
+For a production-style local run, build and serve everything from Express on one port:
+
+```bash
+pnpm build
+pnpm start
+# open http://localhost:8787
 ```
 
 ## Drop-in recorder
@@ -91,6 +70,31 @@ In local development that host is `http://localhost:8787`, and `/recorder-test` 
 By default, the recorder **masks all input, select, and textarea values** (rrweb `maskAllInputs`), so end-user keystrokes — passwords, emails, anything typed — are never sent to the server. To capture raw form control state on a page where that's acceptable (e.g. an internal admin UI), pass `maskAllInputs: false` to `replaya("init", ...)`, or add `data-mask-all-inputs="false"` to the recorder script tag.
 
 Masking covers input values only; text the page renders into the DOM is still recorded. Wrap sensitive regions in the `replaya-block` class to omit them from the recording, or `replaya-ignore` to skip a subtree's changes.
+
+In production, keep the dashboard and read APIs private and expose only the collector routes publicly; see [Configuration & deployment](#configuration--deployment).
+
+## How it works on S2
+
+A session recording is a log: an append-only, ordered, timestamped sequence of events. RePlaya stores each session as one S2 stream and reads it back the same way, so a single primitive covers what's often split across several systems.
+
+- **Storage.** rrweb events are appended to the tail of the session's stream over the S2 Producer API, which batches with backpressure and acks each batch once it's durable. The stream is the recording — there's no separate blob store, and nothing buffers on the server between ingest and storage. Large rrweb events are framed across multiple S2 records and reconstructed on read.
+- **Timeline.** Session streams use `timestamping.mode: client-require`, so the rrweb capture time is written into each event record's S2 timestamp and read back as the scrub timeline. (Create, stop, and heartbeat records use server wall-clock time.)
+- **Listing.** S2 lists streams in lexicographic order, so each stream is named by an inverted timestamp; `streams.list({ prefix: "sessions/" })` then returns newest-first with `startAfter` paging — no database keeping an order in sync. A best-effort sidecar index stream is tailed to update the list as new sessions start.
+- **Live tail.** `GET /api/sessions/:id/live` opens an S2 read session from the snapshot tail and bridges new records to the browser over SSE, where they're appended to the mounted player. The same stream serves both the historical scrub and the live edge.
+- **Concurrency.** Stream creation and stop write `active` / `stopped` fencing tokens; event and heartbeat appends are fenced on `active`, so a finished session can't be resurrected by a late writer.
+
+Streams are created on first append (`createStreamOnAppend`), inheriting the basin's default config, so there's no stream provisioning to manage. That leaves one external dependency: point RePlaya at [S2 Cloud](https://s2.dev/), or at a self-hosted [s2-lite](https://github.com/s2-streamstore/s2#s2-lite) to keep everything in your own infrastructure. Recordings live in your own basin — URI-addressable, with configurable retention and on-demand deletion. The browser never receives the S2 token; all S2 reads and writes go through the RePlaya server.
+
+For comparison with a typical session-replay backend:
+
+| | Typical replay backend | RePlaya |
+| --- | --- | --- |
+| Services to run | Message bus, analytics store, relational DB, object store, search index | One Node server + S2 |
+| Live sessions | Usually playback after an ingest/flush delay | Live tail of active sessions, off the same stream |
+| Stored recording | Blobs in object storage; metadata across databases | One ordered S2 stream per session |
+| Self-host footprint | A multi-service cluster, often on Kubernetes | A single process + S2 (or self-hosted s2-lite) |
+
+Dashboard search is a client-side filter over the sessions already listed — S2 provides ordering and newest-first listing, not full-text search. See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the full design.
 
 ## Configuration & deployment
 
