@@ -1,13 +1,4 @@
-import type {
-  AppendEventsRequest,
-  AppendEventsResponse,
-  CreateSessionRequest,
-  CreateSessionResponse,
-  HealthResponse,
-  ListSessionsResponse,
-  SessionDetail,
-  StopSessionRequest,
-} from './shared/session'
+import type { HealthResponse, ListSessionsResponse, SessionDetail } from './shared/session'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`/api${path}`, {
@@ -47,13 +38,6 @@ export const api = {
     return request<ListSessionsResponse>(`/sessions${query}`)
   },
 
-  createSession(body: CreateSessionRequest) {
-    return request<CreateSessionResponse>('/sessions', {
-      method: 'POST',
-      body: JSON.stringify(body),
-    })
-  },
-
   getSession(id: string) {
     return request<{ session: SessionDetail }>(`/sessions/${id}`)
   },
@@ -68,19 +52,5 @@ export const api = {
 
   liveSessionIndexUrl(fromSeqNum: number) {
     return `/api/sessions/index/live?fromSeqNum=${encodeURIComponent(String(fromSeqNum))}`
-  },
-
-  appendEvents(id: string, body: AppendEventsRequest) {
-    return request<AppendEventsResponse>(`/sessions/${id}/events`, {
-      method: 'POST',
-      body: JSON.stringify(body),
-    })
-  },
-
-  stopSession(id: string, body: StopSessionRequest) {
-    return request<{ session: SessionDetail }>(`/sessions/${id}/stop`, {
-      method: 'POST',
-      body: JSON.stringify(body),
-    })
   },
 }

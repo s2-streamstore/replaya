@@ -6,8 +6,6 @@ export type ReplayEvent = Record<string, unknown> & {
   type?: number
 }
 
-export type TimelineSource = 's2-record-timestamp'
-
 export interface SessionMetadata {
   id: string
   title: string
@@ -29,7 +27,6 @@ export interface SessionSummary extends SessionMetadata {
   streamName: string
   recordCount: number
   lastSeqNum: number
-  timelineSource: TimelineSource
   firstEventAt?: string
   lastEventAt?: string
   durationMs: number
@@ -146,7 +143,6 @@ export interface HealthResponse {
   streamPrefix: string
   activeSessionLeaseMs: number
   s2Status: 'ready' | 'error' | 'missing-config'
-  recorderScriptPath: string
   s2Endpoints: {
     account: string
     basin: string
@@ -186,11 +182,6 @@ export interface HeartbeatSessionRequest {
   title?: string
   eventCount?: number
   sessionToken?: string
-}
-
-export interface AppendEventsResponse {
-  appended: number
-  tailSeqNum: number | null
 }
 
 export interface StopSessionRequest {
