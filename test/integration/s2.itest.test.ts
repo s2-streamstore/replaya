@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { AddressInfo } from 'node:net'
 import type { Server } from 'node:http'
+import { AppendInput, AppendRecord, S2 } from '@s2-dev/streamstore'
 import type { SessionDetail, ListSessionsResponse, ReplayEvent } from '../../src/shared/session.ts'
 
 // These tests round-trip through Express into s2-lite; give them generous
@@ -28,6 +29,55 @@ if (S2_ENDPOINT) {
 }
 
 const integration = describe.skipIf(!S2_ENDPOINT)
+const textEncoder = new TextEncoder()
+
+function utf8Bytes(value: string) {
+  return textEncoder.encode(value)
+}
+
+function bytesHeader(name: string, value: string): readonly [Uint8Array, Uint8Array] {
+  return [utf8Bytes(name), utf8Bytes(value)]
+}
+
+function eventChunkRecord({
+  sessionId,
+  capturedAt,
+  chunkId,
+  chunkIndex,
+  chunkCount,
+  event,
+  body,
+}: {
+  sessionId: string
+  capturedAt: string
+  chunkId: string
+  chunkIndex: number
+  chunkCount: number
+  event: ReplayEvent
+  body: Uint8Array
+}) {
+  const timestamp = typeof event.timestamp === 'number' ? event.timestamp : Date.now()
+  return AppendRecord.bytes({
+    body,
+    headers: [
+      bytesHeader('kind', 'event-chunk'),
+      bytesHeader(
+        'envelope',
+        JSON.stringify({
+          kind: 'event-chunk',
+          sessionId,
+          capturedAt,
+          chunkId,
+          chunkIndex,
+          chunkCount,
+          eventTimestamp: timestamp,
+          eventCount: 1,
+        }),
+      ),
+    ],
+    timestamp,
+  })
+}
 
 integration('S2 integration (s2 lite): create → append → replay', () => {
   let server: Server
@@ -260,6 +310,82 @@ integration('S2 integration (s2 lite): create → append → replay', () => {
       largeText.length,
     )
     expect(detail.events.some((event) => (event.data as { x?: number } | undefined)?.x === 222)).toBe(true)
+  })
+
+  it('backs up live handoff when a detail read ends inside a chunked event', async () => {
+    const { session } = (await json('/api/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: 'Chunk handoff', source: 'integration' }),
+    })) as { session: SessionDetail }
+
+    const event: ReplayEvent = {
+      type: 2,
+      timestamp: Date.now(),
+      data: {
+        node: { type: 0, childNodes: [], largeText: 'x'.repeat(1_200_000) },
+        initialOffset: { top: 0, left: 0 },
+      },
+    }
+    const eventBytes = Buffer.from(JSON.stringify(event), 'utf8')
+    const chunkSize = 512 * 1024
+    const bodies: Uint8Array[] = []
+    for (let offset = 0; offset < eventBytes.length; offset += chunkSize) {
+      bodies.push(eventBytes.subarray(offset, Math.min(offset + chunkSize, eventBytes.length)))
+    }
+    expect(bodies.length).toBeGreaterThan(1)
+
+    const s2 = new S2({
+      accessToken: process.env.S2_ACCESS_TOKEN ?? 'ignored',
+      endpoints: { account: S2_ENDPOINT, basin: S2_ENDPOINT },
+    })
+    const stream = s2.basin(process.env.S2_BASIN ?? 'replaya-it-basin').stream(session.streamName)
+    const chunkId = `chunk-${Date.now()}`
+    const capturedAt = new Date().toISOString()
+    const records = bodies.map((body, chunkIndex) =>
+      eventChunkRecord({
+        sessionId: session.id,
+        capturedAt,
+        chunkId,
+        chunkIndex,
+        chunkCount: bodies.length,
+        event,
+        body,
+      }),
+    )
+
+    const firstChunkAck = await stream.append(AppendInput.create([records[0]], { fencingToken: 'active' }))
+    const detail = ((await json(`/api/sessions/${session.id}`)) as { session: SessionDetail }).session
+
+    expect(detail.events.some((nextEvent) => nextEvent.type === 2)).toBe(false)
+    expect(detail.recordCount).toBeLessThan(firstChunkAck.tail.seqNum)
+
+    await stream.append(AppendInput.create(records.slice(1), { fencingToken: 'active' }))
+
+    let resolveSnapshot: (value: { event?: ReplayEvent }) => void = () => {}
+    const snapshotSeen = new Promise<{ event?: ReplayEvent }>((resolve) => {
+      resolveSnapshot = resolve
+    })
+    const live = await openSse(`/api/sessions/${session.id}/live?fromSeqNum=${detail.recordCount}`, (eventName, data) => {
+      if (eventName === 'session-event') {
+        const payload = data as { event?: ReplayEvent }
+        if (payload.event?.type === 2) resolveSnapshot(payload)
+      }
+    })
+
+    try {
+      const snapshot = await Promise.race([
+        snapshotSeen,
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('timed out waiting for chunked live event')), 10_000),
+        ),
+      ])
+      expect(
+        (snapshot.event?.data as { node?: { largeText?: string } } | undefined)?.node?.largeText?.length,
+      ).toBe(1_200_000)
+    } finally {
+      live.close()
+    }
   })
 
   it('deletes a session from S2', async () => {

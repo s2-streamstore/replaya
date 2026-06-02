@@ -772,6 +772,7 @@ function storedRecordsForEvent(
 interface ChunkAssemblyGroup {
   chunkCount: number
   chunks: Map<number, EventChunkReadRecord>
+  firstSeqNum: number
   updatedAtMs: number
 }
 
@@ -858,7 +859,12 @@ function createChunkAssembler() {
       const existing = groups.get(chunkId)
       if (!existing && chunkIndex !== 0) return null
 
-      const group: ChunkAssemblyGroup = existing ?? { chunkCount, chunks: new Map(), updatedAtMs: nowMs }
+      const group: ChunkAssemblyGroup = existing ?? {
+        chunkCount,
+        chunks: new Map(),
+        firstSeqNum: record.seqNum,
+        updatedAtMs: nowMs,
+      }
       if (group.chunkCount !== chunkCount || group.chunks.has(chunkIndex)) {
         groups.delete(chunkId)
         return null
@@ -877,6 +883,14 @@ function createChunkAssembler() {
       groups.delete(chunkId)
       return assembleChunkGroup(group, record)
     },
+    pendingStartSeqNum() {
+      let firstSeqNum: number | null = null
+      for (const group of groups.values()) {
+        firstSeqNum = firstSeqNum === null ? group.firstSeqNum : Math.min(firstSeqNum, group.firstSeqNum)
+      }
+
+      return firstSeqNum
+    },
   }
 }
 
@@ -889,7 +903,10 @@ function assembleChunkedEvents(records: StoredReadRecord[]) {
     if (next) assembled.push(next)
   }
 
-  return assembled
+  return {
+    records: assembled,
+    pendingStartSeqNum: assembler.pendingStartSeqNum(),
+  }
 }
 
 async function appendStoredRecords(sessionId: string, records: StoredWriteRecord[]) {
@@ -1025,7 +1042,14 @@ async function readStreamRecords(streamName: string) {
     }
   }
 
-  return { records: assembleChunkedEvents(records), tailSeqNum: Number.isFinite(tailSeqNum) ? tailSeqNum : nextSeqNum }
+  const assembled = assembleChunkedEvents(records)
+  const observedTailSeqNum = Number.isFinite(tailSeqNum) ? tailSeqNum : nextSeqNum
+  const effectiveTailSeqNum =
+    assembled.pendingStartSeqNum === null
+      ? observedTailSeqNum
+      : Math.min(observedTailSeqNum, assembled.pendingStartSeqNum)
+
+  return { records: assembled.records, tailSeqNum: effectiveTailSeqNum }
 }
 
 async function readStoredRecords(sessionId: string) {
