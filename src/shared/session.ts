@@ -136,8 +136,6 @@ export type StoredSessionRecord =
       chunkIndex: number
       chunkCount: number
       eventTimestamp: number
-      data: string
-      encoding: 'json/base64url'
       eventCount?: number
     }
 
