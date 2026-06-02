@@ -1045,16 +1045,34 @@
    Replay player
    ============================================================ */
 .replay-frame {
+  display: grid;
+  place-items: center;
   width: 100%;
-  min-height: 500px;
+  min-height: 460px;
   overflow: auto;
   border: 1px solid var(--border);
   border-radius: var(--r);
-  background: var(--surface-2);
+  background-color: var(--surface-2);
+  background-image: radial-gradient(var(--dot) 1.1px, transparent 1.1px);
+  background-size: 18px 18px;
+  box-shadow: inset 0 1px 3px rgba(16, 24, 40, 0.05);
 }
 
+/* Lift the player off the dotted stage as a single screen-plus-controls card. */
 .replay-frame .rr-player {
   margin: 0 auto;
+  overflow: hidden;
+  border-radius: var(--r);
+  background: var(--surface);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.09), 0 12px 30px rgba(16, 24, 40, 0.09);
+}
+
+.replay-frame .rr-player__frame {
+  background: #ffffff;
+}
+
+.replay-frame .rr-controller {
+  border-top: 1px solid var(--border);
 }
 
 .replay-player-shell {
@@ -1197,6 +1215,26 @@
 
 .replay-player-shell.live.following .rr-progress__handler {
   left: 100% !important;
+}
+
+/* Brand-align rrweb's default controller chrome with RePlaya's palette. */
+.replay-frame .rr-controller .rr-progress__step {
+  background: var(--accent);
+}
+
+.replay-frame .rr-controller .rr-progress__handler {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.replay-frame .rr-controller__btns button.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.replay-frame .rr-timeline__time {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 
 /* ============================================================

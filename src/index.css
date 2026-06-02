@@ -4,6 +4,7 @@
   --surface: #ffffff;
   --surface-2: #f6f7f9;
   --surface-3: #f0f2f5;
+  --dot: #d8dce4;
 
   /* Hairlines */
   --border: #e7e9ee;
@@ -119,4 +120,15 @@ code {
 ::selection {
   background: var(--accent-soft);
   color: var(--accent-hover);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }
