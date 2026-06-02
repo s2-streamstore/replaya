@@ -1082,7 +1082,6 @@ function InstallDialog({
             <ConfigSection title="Endpoints">
               <ConfigRow label="Script" value={<code>{appOrigin}/recorder.js</code>} />
               <ConfigRow label="Ingest" value={<code>{appOrigin}/api/sessions/:id/events</code>} />
-              <ConfigRow label="Streams" value={<code>{health?.streamPrefix ?? 'checking'}</code>} />
               <ConfigRow label="Account" value={<code>{health?.s2Endpoints.account ?? 'checking'}</code>} />
               <ConfigRow label="Basin" value={<code>{health?.s2Endpoints.basin ?? 'checking'}</code>} />
             </ConfigSection>

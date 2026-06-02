@@ -51,10 +51,13 @@ const S2_ACCESS_TOKEN = process.env.S2_ACCESS_TOKEN
 const S2_BASIN = process.env.S2_BASIN
 const S2_ACCOUNT_ENDPOINT = process.env.S2_ACCOUNT_ENDPOINT
 const S2_BASIN_ENDPOINT = process.env.S2_BASIN_ENDPOINT
-const STREAM_ROOT = (process.env.S2_STREAM_PREFIX ?? 'sessions/').replace(/\/+$/, '') || 'sessions'
 const NODE_ENV = process.env.NODE_ENV ?? 'development'
 const IS_PRODUCTION = NODE_ENV === 'production'
 const JSON_BODY_LIMIT = process.env.REPLAYA_JSON_BODY_LIMIT ?? '8mb'
+// The basin is dedicated to RePlaya. Session streams always live under a fixed
+// prefix so listing them is a single prefix-scoped scan; the sidecar index sits
+// just outside that prefix, so it never shows up in the scan.
+const STREAM_ROOT = 'sessions'
 const SESSION_STREAM_PREFIX = `${STREAM_ROOT}/`
 const SESSION_INDEX_STREAM = `${STREAM_ROOT}.index/sessions`
 const REVERSE_TIME_MAX_MS = 9_999_999_999_999
@@ -1472,7 +1475,6 @@ app.get(
       ok: false,
       configured: Boolean(S2_ACCESS_TOKEN && S2_BASIN),
       basin: S2_BASIN ?? null,
-      streamPrefix: SESSION_STREAM_PREFIX,
       activeSessionLeaseMs: ACTIVE_SESSION_LEASE_MS,
       s2Status: S2_ACCESS_TOKEN && S2_BASIN ? 'error' : 'missing-config',
       s2Endpoints: {
