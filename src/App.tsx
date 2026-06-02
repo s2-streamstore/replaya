@@ -48,6 +48,26 @@ type LiveStatus = 'idle' | 'connecting' | 'live' | 'closed' | 'error'
 type InspectorTab = 'activity' | 'details'
 const SESSION_PAGE_LIMIT = 20
 
+// Cursor-based, bidirectional paging over the session list. `cursors[i]` is the
+// `startAfter` that produced page `i` (so we can step back to newer pages), and
+// the index sidecar tail is only meaningful on the newest page.
+interface SessionPaging {
+  pageIndex: number
+  cursors: Array<string | undefined>
+  hasMore: boolean
+  nextCursor?: string
+  latestPage: boolean
+  indexTailSeqNum: number | null
+}
+
+const INITIAL_PAGING: SessionPaging = {
+  pageIndex: 0,
+  cursors: [undefined],
+  hasMore: false,
+  latestPage: true,
+  indexTailSeqNum: null,
+}
+
 const dateFormat = new Intl.DateTimeFormat('en-US', {
   month: 'short',
   day: 'numeric',
@@ -197,12 +217,7 @@ function App() {
   const [deletingSession, setDeletingSession] = useState(false)
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>('activity')
   const [seekedEntryId, setSeekedEntryId] = useState<string | null>(null)
-  const [latestSessionPage, setLatestSessionPage] = useState(true)
-  const [sessionIndexTailSeqNum, setSessionIndexTailSeqNum] = useState<number | null>(null)
-  const [sessionPageIndex, setSessionPageIndex] = useState(0)
-  const [sessionPageCursors, setSessionPageCursors] = useState<Array<string | undefined>>([undefined])
-  const [sessionHasMore, setSessionHasMore] = useState(false)
-  const [nextSessionPageCursor, setNextSessionPageCursor] = useState<string | undefined>()
+  const [paging, setPaging] = useState<SessionPaging>(INITIAL_PAGING)
   const selectedRef = useRef<SessionDetail | null>(null)
   const playerRef = useRef<ReplayPlayerHandle | null>(null)
 
@@ -231,16 +246,18 @@ ${initOptions.join(',\n')}
 
   const applySessionList = useCallback((list: ListSessionsResponse, pageIndex: number, startAfter?: string) => {
     setSessions(list.sessions)
-    setLatestSessionPage(list.latestPage)
-    setSessionIndexTailSeqNum(list.latestPage ? list.indexTailSeqNum : null)
-    setSessionPageIndex(pageIndex)
-    setSessionHasMore(list.hasMore)
-    setNextSessionPageCursor(list.nextStartAfter)
-    setSessionPageCursors((current) => {
-      const next = current.slice(0, pageIndex + 1)
-      next[pageIndex] = startAfter
-      if (list.nextStartAfter) next[pageIndex + 1] = list.nextStartAfter
-      return next
+    setPaging((current) => {
+      const cursors = current.cursors.slice(0, pageIndex + 1)
+      cursors[pageIndex] = startAfter
+      if (list.nextStartAfter) cursors[pageIndex + 1] = list.nextStartAfter
+      return {
+        pageIndex,
+        cursors,
+        hasMore: list.hasMore,
+        nextCursor: list.nextStartAfter,
+        latestPage: list.latestPage,
+        indexTailSeqNum: list.latestPage ? list.indexTailSeqNum : null,
+      }
     })
   }, [])
 
@@ -285,20 +302,19 @@ ${initOptions.join(',\n')}
   )
 
   const refreshSessions = useCallback(async () => {
-    const startAfter = sessionPageCursors[sessionPageIndex]
-    await loadSessionsPage(sessionPageIndex, startAfter, { refreshHealth: true })
-  }, [loadSessionsPage, sessionPageCursors, sessionPageIndex])
+    await loadSessionsPage(paging.pageIndex, paging.cursors[paging.pageIndex], { refreshHealth: true })
+  }, [loadSessionsPage, paging])
 
   const loadOlderSessionsPage = useCallback(async () => {
-    if (!sessionHasMore || !nextSessionPageCursor) return
-    await loadSessionsPage(sessionPageIndex + 1, nextSessionPageCursor, { selectFirst: true })
-  }, [loadSessionsPage, nextSessionPageCursor, sessionHasMore, sessionPageIndex])
+    if (!paging.hasMore || !paging.nextCursor) return
+    await loadSessionsPage(paging.pageIndex + 1, paging.nextCursor, { selectFirst: true })
+  }, [loadSessionsPage, paging])
 
   const loadNewerSessionsPage = useCallback(async () => {
-    if (sessionPageIndex <= 0) return
-    const nextPageIndex = sessionPageIndex - 1
-    await loadSessionsPage(nextPageIndex, sessionPageCursors[nextPageIndex], { selectFirst: true })
-  }, [loadSessionsPage, sessionPageCursors, sessionPageIndex])
+    if (paging.pageIndex <= 0) return
+    const nextPageIndex = paging.pageIndex - 1
+    await loadSessionsPage(nextPageIndex, paging.cursors[nextPageIndex], { selectFirst: true })
+  }, [loadSessionsPage, paging])
 
   const resetToLatestSessionsPage = useCallback(async () => {
     await loadSessionsPage(0, undefined, { selectFirst: true, refreshHealth: true })
@@ -334,9 +350,9 @@ ${initOptions.join(',\n')}
   }, [applySessionList, loadSession])
 
   useEffect(() => {
-    if (!latestSessionPage || sessionIndexTailSeqNum === null) return
+    if (!paging.latestPage || paging.indexTailSeqNum === null) return
 
-    const source = new EventSource(api.liveSessionIndexUrl(sessionIndexTailSeqNum))
+    const source = new EventSource(api.liveSessionIndexUrl(paging.indexTailSeqNum))
 
     const handleMessage = (event: MessageEvent<string>) => {
       try {
@@ -366,7 +382,7 @@ ${initOptions.join(',\n')}
     return () => {
       source.close()
     }
-  }, [latestSessionPage, loadSession, sessionIndexTailSeqNum])
+  }, [paging.latestPage, paging.indexTailSeqNum, loadSession])
 
   useEffect(() => {
     if (!selectedId) {
@@ -578,13 +594,13 @@ ${initOptions.join(',\n')}
       setLiveStatus('idle')
       // …then reconcile with the server so the list reflects authoritative truth
       // (refills the page, re-selects the new first session) regardless of client state.
-      await loadSessionsPage(sessionPageIndex, sessionPageCursors[sessionPageIndex], { selectFirst: true })
+      await loadSessionsPage(paging.pageIndex, paging.cursors[paging.pageIndex], { selectFirst: true })
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : 'Unable to delete session.')
     } finally {
       setDeletingSession(false)
     }
-  }, [selected, sessionPageIndex, sessionPageCursors, loadSessionsPage])
+  }, [selected, paging, loadSessionsPage])
 
   const activity = useMemo(() => (selected ? buildActivity(selected.events) : []), [selected])
 
@@ -679,26 +695,26 @@ ${initOptions.join(',\n')}
                   type="button"
                   className="ghost-button pagination-button"
                   onClick={() => void loadNewerSessionsPage()}
-                  disabled={loadingSessions || sessionPageIndex === 0}
+                  disabled={loadingSessions || paging.pageIndex === 0}
                 >
                   <ChevronLeft size={16} aria-hidden="true" />
                   Newer
                 </button>
                 <span className="pagination-status">
-                  Page {sessionPageIndex + 1}
-                  {latestSessionPage ? ' · live' : ''}
+                  Page {paging.pageIndex + 1}
+                  {paging.latestPage ? ' · live' : ''}
                 </span>
                 <button
                   type="button"
                   className="ghost-button pagination-button"
                   onClick={() => void loadOlderSessionsPage()}
-                  disabled={loadingSessions || !sessionHasMore || !nextSessionPageCursor}
+                  disabled={loadingSessions || !paging.hasMore || !paging.nextCursor}
                 >
                   Older
                   <ChevronRight size={16} aria-hidden="true" />
                 </button>
               </div>
-              {sessionPageIndex > 0 && (
+              {paging.pageIndex > 0 && (
                 <button
                   type="button"
                   className="ghost-button pagination-reset"
