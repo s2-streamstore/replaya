@@ -163,7 +163,6 @@ export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(fu
 
       const scheduledSessionId = sessionId
       setFollowingLiveEdgeState(false)
-      setPlayerState('playing')
       void Promise.resolve().then(() => {
         if (
           playerRef.current !== player ||

@@ -39,6 +39,14 @@ function bytesHeader(name: string, value: string): readonly [Uint8Array, Uint8Ar
   return [utf8Bytes(name), utf8Bytes(value)]
 }
 
+function requireTestBasin() {
+  if (!process.env.S2_BASIN) {
+    throw new Error('S2_BASIN must be configured for S2 integration tests.')
+  }
+
+  return process.env.S2_BASIN
+}
+
 function eventChunkRecord({
   sessionId,
   capturedAt,
@@ -339,7 +347,7 @@ integration('S2 integration (s2 lite): create → append → replay', () => {
       accessToken: process.env.S2_ACCESS_TOKEN ?? 'ignored',
       endpoints: { account: S2_ENDPOINT, basin: S2_ENDPOINT },
     })
-    const stream = s2.basin(process.env.S2_BASIN ?? 'replaya-it-basin').stream(session.streamName)
+    const stream = s2.basin(requireTestBasin()).stream(session.streamName)
     const chunkId = `chunk-${Date.now()}`
     const capturedAt = new Date().toISOString()
     const records = bodies.map((body, chunkIndex) =>

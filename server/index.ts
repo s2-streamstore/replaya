@@ -1308,6 +1308,9 @@ function summaryFromStreamSnapshot(snapshot: Awaited<ReturnType<typeof readStrea
     .at(-1)?.envelope.metadata
   const latestMetadata = latestStopMetadata ?? firstMetadata
   const latestHeartbeat = latestRecordOfKind(snapshot.tailRecords, 'heartbeat')?.envelope
+  // Listing snapshots intentionally read raw head/tail windows without assembling chunks.
+  // Summaries only need S2 timestamps plus eventCount, which storedRecordsForEvent writes
+  // identically onto every chunk in a logical rrweb event.
   const latestEventRecord = latestReplayEventLikeRecord(snapshot.tailRecords)
   const fallbackTime = new Date(sessionCreatedAtMs(sessionId)).toISOString()
   const lastSeenAt = snapshot.tailTimestamp.toISOString()
