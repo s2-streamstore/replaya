@@ -36,6 +36,8 @@ import type {
   ReplayEvent,
   SessionDetail,
   SessionMetadata,
+  SessionStatus,
+  SessionStopReason,
   SessionSummary,
   StopSessionRequest,
   StoredSessionRecord,
@@ -1055,6 +1057,56 @@ async function readStoredRecords(sessionId: string) {
   }
 }
 
+// Shared assembly for the two read paths below (full replay read vs. head/tail
+// window). Each path resolves the source fields differently, but the resulting
+// SessionSummary shape is identical — keep it single-sourced here so the two
+// paths can't drift.
+interface SessionSummaryFields {
+  sessionId: string
+  streamName: string
+  tailSeqNum: number
+  // Metadata record that supplies display fields (title, url, ids, createdAt).
+  displayMetadata?: SessionMetadata
+  status: SessionStatus
+  stoppedAt?: string
+  stopReason?: SessionStopReason
+  createdAtFallback: string
+  updatedAt: string
+  lastSeenAt: string
+  eventCount: number
+  firstEventAt?: string
+  lastEventAt?: string
+}
+
+function buildSessionSummary(fields: SessionSummaryFields): SessionSummary {
+  const { displayMetadata: metadata, firstEventAt, lastEventAt } = fields
+
+  return {
+    id: fields.sessionId,
+    title: metadata?.title ?? fields.sessionId,
+    status: fields.status,
+    createdAt: metadata?.createdAt ?? fields.createdAtFallback,
+    updatedAt: fields.updatedAt,
+    lastSeenAt: fields.lastSeenAt,
+    stoppedAt: fields.stoppedAt,
+    stopReason: fields.stopReason,
+    eventCount: fields.eventCount,
+    url: metadata?.url,
+    source: metadata?.source,
+    distinctId: metadata?.distinctId,
+    userId: metadata?.userId,
+    sdk: metadata?.sdk,
+    streamName: fields.streamName,
+    recordCount: fields.tailSeqNum,
+    lastSeqNum: Math.max(0, fields.tailSeqNum - 1),
+    timelineSource: 's2-record-timestamp',
+    firstEventAt,
+    lastEventAt,
+    durationMs:
+      firstEventAt && lastEventAt ? Math.max(0, Date.parse(lastEventAt) - Date.parse(firstEventAt)) : 0,
+  }
+}
+
 function summarizeSession(
   sessionId: string,
   streamName: string,
@@ -1069,34 +1121,22 @@ function summarizeSession(
   const lastEventTimestamp = eventRecords.at(-1)?.s2Timestamp
   const fallbackTime = new Date().toISOString()
   const lastSeenAt = sessionLastSeenAt(records, metadata) ?? fallbackTime
-  const updatedAt = newestIso(metadata?.updatedAt, lastSeenAt, lastEventTimestamp?.toISOString()) ?? fallbackTime
 
-  const summary: SessionSummary = {
-    id: sessionId,
-    title: metadata?.title ?? sessionId,
+  const summary = buildSessionSummary({
+    sessionId,
+    streamName,
+    tailSeqNum,
+    displayMetadata: metadata,
     status: metadata?.status ?? 'active',
-    createdAt: metadata?.createdAt ?? fallbackTime,
-    updatedAt,
-    lastSeenAt,
     stoppedAt: metadata?.stoppedAt,
     stopReason: metadata?.stopReason,
+    createdAtFallback: fallbackTime,
+    updatedAt: newestIso(metadata?.updatedAt, lastSeenAt, lastEventTimestamp?.toISOString()) ?? fallbackTime,
+    lastSeenAt,
     eventCount: Math.max(metadata?.eventCount ?? 0, eventRecords.length),
-    url: metadata?.url,
-    source: metadata?.source,
-    distinctId: metadata?.distinctId,
-    userId: metadata?.userId,
-    sdk: metadata?.sdk,
-    streamName,
-    recordCount: tailSeqNum,
-    lastSeqNum: Math.max(0, tailSeqNum - 1),
-    timelineSource: 's2-record-timestamp',
     firstEventAt: firstEventTimestamp?.toISOString(),
     lastEventAt: lastEventTimestamp?.toISOString(),
-    durationMs:
-      firstEventTimestamp && lastEventTimestamp
-        ? Math.max(0, lastEventTimestamp.getTime() - firstEventTimestamp.getTime())
-        : 0,
-  }
+  })
 
   return options.deriveStatus === false ? summary : deriveSessionStatus(summary)
 }
@@ -1302,41 +1342,28 @@ function summaryFromStreamSnapshot(snapshot: Awaited<ReturnType<typeof readStrea
   // Summaries only need S2 timestamps plus eventCount, which storedRecordsForEvent writes
   // identically onto every chunk in a logical rrweb event.
   const latestEventRecord = latestReplayEventLikeRecord(snapshot.tailRecords)
-  const fallbackTime = new Date(sessionCreatedAtMs(sessionId)).toISOString()
   const lastSeenAt = snapshot.tailTimestamp.toISOString()
-  const firstEventAt = firstEvent?.s2Timestamp.toISOString()
-  const lastEventAt = latestEventRecord?.s2Timestamp.toISOString()
-  const eventCount =
-    latestStopMetadata?.eventCount ??
-    latestHeartbeat?.eventCount ??
-    eventCountFromRecord(latestEventRecord) ??
-    firstMetadata?.eventCount ??
-    0
 
-  const summary: SessionSummary = {
-    id: sessionId,
-    title: latestMetadata?.title ?? sessionId,
+  const summary = buildSessionSummary({
+    sessionId,
+    streamName: snapshot.streamName,
+    tailSeqNum: snapshot.tailSeqNum,
+    displayMetadata: latestMetadata,
     status: latestStopMetadata ? 'stopped' : 'active',
-    createdAt: latestMetadata?.createdAt ?? fallbackTime,
-    updatedAt: latestStopMetadata?.updatedAt ?? lastSeenAt,
-    lastSeenAt,
     stoppedAt: latestStopMetadata?.stoppedAt,
     stopReason: latestStopMetadata?.stopReason,
-    eventCount,
-    url: latestMetadata?.url,
-    source: latestMetadata?.source,
-    distinctId: latestMetadata?.distinctId,
-    userId: latestMetadata?.userId,
-    sdk: latestMetadata?.sdk,
-    streamName: snapshot.streamName,
-    recordCount: snapshot.tailSeqNum,
-    lastSeqNum: Math.max(0, snapshot.tailSeqNum - 1),
-    timelineSource: 's2-record-timestamp',
-    firstEventAt,
-    lastEventAt,
-    durationMs:
-      firstEventAt && lastEventAt ? Math.max(0, Date.parse(lastEventAt) - Date.parse(firstEventAt)) : 0,
-  }
+    createdAtFallback: new Date(sessionCreatedAtMs(sessionId)).toISOString(),
+    updatedAt: latestStopMetadata?.updatedAt ?? lastSeenAt,
+    lastSeenAt,
+    eventCount:
+      latestStopMetadata?.eventCount ??
+      latestHeartbeat?.eventCount ??
+      eventCountFromRecord(latestEventRecord) ??
+      firstMetadata?.eventCount ??
+      0,
+    firstEventAt: firstEvent?.s2Timestamp.toISOString(),
+    lastEventAt: latestEventRecord?.s2Timestamp.toISOString(),
+  })
 
   return deriveSessionStatus(summary)
 }
